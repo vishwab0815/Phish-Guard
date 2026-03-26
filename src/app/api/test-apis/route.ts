@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
       });
 
       const completion = await groq.chat.completions.create({
-        model: 'llama-3.1-70b-versatile',
+        model: 'llama-3.3-70b-versatile',
         messages: [{ role: 'user', content: 'Say "API Working" in 2 words' }],
         max_tokens: 10,
       });

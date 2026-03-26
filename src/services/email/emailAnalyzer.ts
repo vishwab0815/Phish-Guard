@@ -4,6 +4,7 @@
  */
 
 import { ThreatLevel } from '@/db/schema';
+import Groq from 'groq-sdk';
 
 export interface EmailAnalysisResult {
   isPhishing: boolean;
@@ -96,6 +97,33 @@ export class EmailAnalyzer {
     if (contentAnalysis.hasSuspiciousAttachments > 0) {
       indicators.push(`Email has ${contentAnalysis.hasSuspiciousAttachments} suspicious attachments`);
       riskScore += Math.min(contentAnalysis.hasSuspiciousAttachments * 20, 40);
+    }
+
+    // Layer 3: AI-Powered Semantic Analysis
+    if (process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.includes('your-key-here')) {
+      try {
+        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+        const completion = await groq.chat.completions.create({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a cybersecurity expert. Analyze the following email subject and body for phishing or social engineering. Return a JSON object with: isPhishing (boolean), riskScore (0-100), indicators (array of strings).'
+            },
+            { role: 'user', content: `Subject: ${emailData.subject}\n\nBody: ${emailData.body}` }
+          ],
+          response_format: { type: 'json_object' }
+        });
+
+        const aiAnalysis = JSON.parse(completion.choices[0]?.message?.content || '{}');
+        if (aiAnalysis.isPhishing) {
+          indicators.push('AI Analysis: Detected semantic phishing patterns');
+          indicators.push(...(aiAnalysis.indicators || []));
+          riskScore = Math.max(riskScore, aiAnalysis.riskScore || 0);
+        }
+      } catch (error) {
+        console.error('Groq email analysis failed:', error);
+      }
     }
 
     // Analyze sender reputation

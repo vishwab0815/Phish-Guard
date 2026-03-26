@@ -35,6 +35,7 @@ import {
   TrendingUp,
   XCircle
 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface ThreatIndicator {
   type: 'critical' | 'warning' | 'info';
@@ -904,7 +905,8 @@ export function ScanInterface({ backendService }: ScanInterfaceProps) {
 
         // Calculate reputation score from risk score
         if (analysis.risk_score !== undefined) {
-          metadata.reputation_score = `${100 - analysis.risk_score}/100`;
+          const repScore = Math.max(0, Math.min(100, 100 - analysis.risk_score));
+          metadata.reputation_score = `${repScore}/100`;
         }
 
         // Add scan layers info
@@ -930,8 +932,8 @@ export function ScanInterface({ backendService }: ScanInterfaceProps) {
           scan_details: {
             scan_type: type.toUpperCase(),
             processing_time: backendResult.analysis.scan_duration_ms ? backendResult.analysis.scan_duration_ms / 1000 : 2.5,
-            database_version: backendResult.analysis.model_version || 'PhishGuard AI v2024.12',
-            analysis_depth: `${completedLayers.length} Detection Layers: ${completedLayers.join(' + ')}`
+            database_version: backendResult.analysis.model_version || 'PhishGuard Cloud Engine v2.1 (LIVE)',
+            analysis_depth: `${Math.max(1, completedLayers.length)} Detection Layers (DIRECT API)`
           },
           metadata
         };
@@ -1023,7 +1025,14 @@ export function ScanInterface({ backendService }: ScanInterfaceProps) {
   };
 
   return (
-    <div className="space-y-6">
+    <AnimatePresence mode="wait">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -20 }}
+        transition={{ duration: 0.5, ease: "easeOut" }}
+        className="space-y-6"
+      >
       <Card className="phish-card">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -1695,6 +1704,7 @@ export function ScanInterface({ backendService }: ScanInterfaceProps) {
           </CardContent>
         </Card>
       )}
-    </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }

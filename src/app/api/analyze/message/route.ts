@@ -2,8 +2,40 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/db';
 import { modelConfigs, scanResults } from '@/db/schema';
 import { eq } from 'drizzle-orm';
+import Groq from 'groq-sdk';
 
 async function analyzeMessage(message: string, context: any) {
+  // If Groq API key is configured, use it for high-fidelity analysis
+  if (process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.includes('your-key-here')) {
+    try {
+      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const completion = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a cybersecurity expert. Analyze the following message for social engineering, phishing, or financial fraud. Return a JSON object with: riskScore (0-1), threatLevel (SAFE, LOW, MEDIUM, HIGH, CRITICAL), indicators (array of strings), and recommendations (array of strings).'
+          },
+          { role: 'user', content: message }
+        ],
+        response_format: { type: 'json_object' }
+      });
+
+      const analysis = JSON.parse(completion.choices[0]?.message?.content || '{}');
+      return {
+        confidence: 90,
+        threat_level: analysis.threatLevel || 'SAFE',
+        risk_score: Math.round((analysis.riskScore || 0) * 100),
+        indicators: analysis.indicators || [],
+        message_analysis: { ai_analysis: true, engine: 'Groq Llama 3.3' },
+        recommendations: analysis.recommendations || []
+      };
+    } catch (error) {
+      console.error('Groq message analysis failed, falling back to heuristic:', error);
+    }
+  }
+
+  // Heuristic Fallback (Original Logic)
   const socialEngineeringPatterns = [
     'urgent', 'emergency', 'immediately', 'asap', 'deadline',
     'secret', 'confidential', 'do not tell', 'between us',

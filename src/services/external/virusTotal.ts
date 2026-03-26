@@ -257,7 +257,7 @@ export class VirusTotalService {
   private static isCacheValid(scanDate: Date): boolean {
     const now = new Date();
     const cacheAge = now.getTime() - scanDate.getTime();
-    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+    const maxAge = 10 * 60 * 1000; // 10 minutes (Ensure live lookups for fresh results)
 
     return cacheAge < maxAge;
   }

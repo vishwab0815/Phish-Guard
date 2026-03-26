@@ -227,7 +227,7 @@ export class DomainService {
 
   private static async cacheIntelligence(domain: string, result: DomainAnalysisResult) {
     const now = new Date();
-    const expiry = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const expiry = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes (Ensure live lookups)
 
     try {
       await db.insert(domainIntelligence).values({

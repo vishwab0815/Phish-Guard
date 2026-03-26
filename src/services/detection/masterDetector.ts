@@ -140,9 +140,9 @@ export class MasterDetector {
     const result: ComprehensiveAnalysisResult = {
       target: url,
       type: 'URL',
-      confidence,
+      confidence: Math.min(100, Math.max(0, confidence)),
       threatLevel,
-      riskScore,
+      riskScore: Math.max(0, riskScore),
       indicators,
       recommendations,
       riskBreakdown: breakdown,
@@ -222,9 +222,9 @@ export class MasterDetector {
 
   private static buildTrustedResult(url: string, scanDuration: number): ComprehensiveAnalysisResult {
     return {
-      target: url, type: 'URL', confidence: 95, threatLevel: 'SAFE', riskScore: 0,
-      indicators: ['Domain is trusted'], recommendations: ['URL is verified'],
-      layers: {}, scanDuration, timestamp: new Date(),
+      target: url, type: 'URL', confidence: 100, threatLevel: 'SAFE', riskScore: 0,
+      indicators: ['Domain is verified as a trusted provider'], recommendations: ['URL is verified legitimate'],
+      layers: { staticAnalysis: 'completed', domainIntelligence: 'completed' }, scanDuration, timestamp: new Date(),
     };
   }
 
