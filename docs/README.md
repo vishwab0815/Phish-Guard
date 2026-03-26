@@ -1,14 +1,14 @@
-# PhishGuard: Beginner's Master Guide 🎓
+# Cyber-Protect: Beginner's Master Guide 🎓
 
-Welcome to PhishGuard! This guide is designed to help you understand what this project is, how it works, and how you can get started as a developer—even if you're new to cybersecurity.
+Welcome to **Cyber-Protect** (formerly PhishGuard)! This guide is designed to help you understand what this project is, how it works, and how you can get started as a developer—even if you're new to cybersecurity.
 
 ---
 
-## 🛡️ What is PhishGuard?
+## 🛡️ What is Cyber-Protect?
 
-PhishGuard is an **automated cybersecurity analyst**. 
+Cyber-Protect is an **automated cybersecurity analyst**. 
 
-In the real world, attackers send "phishing" links to steal passwords. Usually, a human expert would have to look at a link to see if it's dangerous. PhishGuard does this automatically using multiple "layers" of intelligence:
+In the real world, attackers send "phishing" links to steal passwords. Usually, a human expert would have to look at a link to see if it's dangerous. Cyber-Protect does this automatically using multiple "layers" of intelligence:
 
 1.  **Static Layer**: Does the link look weird? (e.g., `paypa1.com` instead of `paypal.com`)
 2.  **Domain Layer**: How old is the website? (New sites are more suspicious)
@@ -54,7 +54,7 @@ If you want to start coding, here is where the important stuff lives:
 
 ## 🏗️ Architecture (The "Big Picture")
 
-PhishGuard follows a **Layered Architecture**:
+Cyber-Protect follows a **Layered Architecture**:
 - **UI Layer** (Frontend): React components that users interact with.
 - **Service Layer** (Backend): The engines that actually do the scanning.
 - **Data Layer** (Database): Where we store history and settings.
@@ -76,4 +76,4 @@ Start by reading the code comments! Every major function has a description expla
 
 ---
 
-*PhishGuard — Making the web safer, one scan at a time.* 🛡️
+*Cyber-Protect — Making the web safer, one scan at a time.* 🛡️

@@ -1,4 +1,4 @@
-# PhishGuard 🛡️
+# Cyber-Protect (PhishGuard) 🛡️
 
 > AI-Powered Phishing Detection Platform - Protecting users from cyber threats with intelligent, multi-layered analysis.
 
@@ -30,12 +30,12 @@ Open [http://localhost:3000](http://localhost:3000) ✅
 
 ## ✨ Key Features
 
-- ✅ **Multi-Layer Detection**: 5 detection layers (Static → Domain → SSL → IP → External APIs).
+- ✅ **Multi-Layer Detection**: 5 detection layers (Static → Domain → SSL → IP → AI Analysis).
 - ✅ **High Accuracy**: Weighted risk scoring from 70% to 95% detection rates.
 - ✅ **Fast**: Integrated caching and parallel analysis for <2 second scan times.
 - ✅ **Modern Tech**: Built with Next.js 16, Drizzle ORM, and Supabase.
-- ✅ **Security First**: Input validation, rate limiting, and zero client-side credentials.
-- ✅ **Enterprise Ready**: Full test suite and comprehensive observability endpoints.
+- ✅ **Security First**: Fully parameterized queries (SQLi Proof) and rate limiting.
+- ✅ **Enterprise Ready**: Full test suite and comprehensive health endpoints.
 
 ---
 
@@ -44,9 +44,6 @@ Open [http://localhost:3000](http://localhost:3000) ✅
 | Document | Purpose |
 |----------|---------|
 | **[docs/README.md](docs/README.md)** | 📖 **Beginner's Master Guide** (Start here!) |
-| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | 🏗️ System design & detection flow |
-| **[docs/TESTING.md](docs/TESTING.md)** | 🧪 Testing & quality benchmarks |
-| **[docs/ENTERPRISE_READINESS.md](docs/ENTERPRISE_READINESS.md)** | 🏢 Production & Vercel deployment |
 
 ---
 
@@ -83,7 +80,7 @@ npm run test:coverage   # Coverage report
 
 ## 🔐 Security & Performance
 
-- **Safety**: Fully parameterized queries via Drizzle (SQLi Proof).
+- **Safety**: fully sanitized inputs and parameterized database queries.
 - **Control**: Comprehensive rate limiting on all analysis endpoints.
 - **Speed**: Optimized database indexing and edge-ready API routes.
 
