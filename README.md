@@ -30,12 +30,12 @@ Open [http://localhost:3000](http://localhost:3000) ✅
 
 ## ✨ Key Features
 
-- ✅ **Multi-Layer Detection**: 5 detection layers (Static → Domain → SSL → IP → AI Analysis).
-- ✅ **High Accuracy**: Weighted risk scoring from 70% to 95% detection rates.
-- ✅ **Fast**: Integrated caching and parallel analysis for <2 second scan times.
-- ✅ **Modern Tech**: Built with Next.js 16, Drizzle ORM, and Supabase.
-- ✅ **Security First**: Fully parameterized queries (SQLi Proof) and rate limiting.
-- ✅ **Enterprise Ready**: Full test suite and comprehensive health endpoints.
+- ✅ **Multi-Layer Detection**: 5+ detection layers (Static → Domain → SSL → IP → AI Analysis).
+- ✅ **Cloud Intelligence**: Direct integration with **VirusTotal**, **Google Safe Browsing**, and **PhishTank**.
+- ✅ **Groq AI powered**: High-fidelity security chatbot and message classifier using **Llama 3.3 (70B)**.
+- ✅ **Modern Tech**: Built with **Next.js 15**, **Drizzle ORM (Supabase)**, and **Framer Motion**.
+- ✅ **Premium UI**: Glassmorphism design system with Liquid-smooth animations.
+- ✅ **Enterprise Ready**: Full test suite, production build verified, and comprehensive health monitoring.
 
 ---
 
