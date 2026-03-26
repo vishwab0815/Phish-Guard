@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Search, Download, Eye, Trash2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { toast } from "sonner";
 
 interface HistoryItem {
   id: string;
@@ -294,7 +295,20 @@ export function ScanHistory({ backendService }: ScanHistoryProps) {
                               </div>
                             </DialogContent>
                           </Dialog>
-                          <Button variant="ghost" size="icon">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={async () => {
+                              if (!confirm('Are you sure you want to delete this scan?')) return;
+                              const result = await backendService.deleteScan(item.id);
+                              if (result.success) {
+                                setHistoryData(prev => prev.filter(h => h.id !== item.id));
+                                toast.success('Scan deleted');
+                              } else {
+                                toast.error('Failed to delete scan');
+                              }
+                            }}
+                          >
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>

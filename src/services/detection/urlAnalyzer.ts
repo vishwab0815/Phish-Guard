@@ -26,7 +26,22 @@ export interface URLAnalysisResult {
 const SUSPICIOUS_KEYWORDS = [
   'login', 'signin', 'verify', 'secure', 'account', 'update', 'confirm',
   'banking', 'paypal', 'amazon', 'apple', 'microsoft', 'google',
-  'password', 'wallet', 'crypto', 'suspended', 'locked', 'urgent'
+  'password', 'wallet', 'crypto', 'suspended', 'locked', 'urgent',
+  'validate', 'authenticate', 'billing', 'payment', 'refund', 'prize',
+  'winner', 'claim', 'expired', 'renew', 'security-check', 'verification'
+];
+
+// Known malicious/phishing domains and patterns
+const KNOWN_MALICIOUS_PATTERNS = [
+  'free-', 'get-free', 'download-', 'click-here', 'verify-account',
+  'secure-login', 'account-update', 'password-reset', 'confirm-identity',
+  'suspended-account', 'unlock-account', 'billing-problem', 'unusual-activity'
+];
+
+// Brand impersonation patterns
+const BRAND_KEYWORDS = [
+  'paypal', 'amazon', 'microsoft', 'google', 'apple', 'facebook',
+  'netflix', 'instagram', 'twitter', 'linkedin', 'dropbox', 'adobe'
 ];
 
 // High-risk TLDs commonly used in phishing
@@ -87,11 +102,30 @@ export class URLAnalyzer {
       riskScore += 25;
     }
 
-    // Check for suspicious keywords
-    const hasSuspiciousKeywords = this.checkSuspiciousKeywords(url);
-    if (hasSuspiciousKeywords) {
-      indicators.push('URL contains suspicious keywords');
-      riskScore += 15;
+    // Check for brand impersonation first
+    const brandImpersonation = this.checkBrandImpersonation(parsedUrl.hostname);
+    if (brandImpersonation.isImpersonating) {
+      indicators.push(`Potential ${brandImpersonation.brand} impersonation - Domain mismatch detected`);
+      riskScore += 45;
+    }
+
+    // Check for suspicious keywords (but not if it's a legitimate brand domain)
+    const suspiciousKeywords = this.checkSuspiciousKeywords(url);
+    // Filter out brand names if this is the legitimate domain
+    const filteredKeywords = brandImpersonation.isImpersonating
+      ? suspiciousKeywords
+      : suspiciousKeywords.filter(keyword => !BRAND_KEYWORDS.includes(keyword));
+
+    if (filteredKeywords.length > 0) {
+      indicators.push(`Suspicious keywords detected: ${filteredKeywords.join(', ')}`);
+      riskScore += 15 * filteredKeywords.length;
+    }
+
+    // Check for malicious patterns
+    const maliciousPatterns = this.checkMaliciousPatterns(url);
+    if (maliciousPatterns.length > 0) {
+      indicators.push(`Known phishing patterns detected: ${maliciousPatterns.join(', ')}`);
+      riskScore += 35 * maliciousPatterns.length;
     }
 
     // Check for homograph attacks
@@ -164,7 +198,7 @@ export class URLAnalyzer {
       indicators,
       details: {
         hasIPAddress,
-        hasSuspiciousKeywords,
+        hasSuspiciousKeywords: suspiciousKeywords.length > 0,
         hasHomograph,
         hasUnusualPort,
         hasShortener,
@@ -188,11 +222,46 @@ export class URLAnalyzer {
   }
 
   /**
-   * Check for suspicious keywords
+   * Check for suspicious keywords - returns array of found keywords
    */
-  private static checkSuspiciousKeywords(url: string): boolean {
+  private static checkSuspiciousKeywords(url: string): string[] {
     const lowerUrl = url.toLowerCase();
-    return SUSPICIOUS_KEYWORDS.some(keyword => lowerUrl.includes(keyword));
+    return SUSPICIOUS_KEYWORDS.filter(keyword => lowerUrl.includes(keyword));
+  }
+
+  /**
+   * Check for known malicious patterns
+   */
+  private static checkMaliciousPatterns(url: string): string[] {
+    const lowerUrl = url.toLowerCase();
+    return KNOWN_MALICIOUS_PATTERNS.filter(pattern => lowerUrl.includes(pattern));
+  }
+
+  /**
+   * Check for brand impersonation
+   */
+  private static checkBrandImpersonation(hostname: string): { isImpersonating: boolean; brand?: string } {
+    const lowerHostname = hostname.toLowerCase();
+
+    for (const brand of BRAND_KEYWORDS) {
+      // Check if brand name is in hostname but not as the main domain
+      if (lowerHostname.includes(brand)) {
+        // Valid brand domains
+        const validDomains = [
+          `${brand}.com`,
+          `www.${brand}.com`,
+          `${brand}.net`,
+          `${brand}.org`
+        ];
+
+        // If hostname contains brand but doesn't match valid domains
+        if (!validDomains.some(valid => lowerHostname.endsWith(valid))) {
+          return { isImpersonating: true, brand: brand.charAt(0).toUpperCase() + brand.slice(1) };
+        }
+      }
+    }
+
+    return { isImpersonating: false };
   }
 
   /**
@@ -292,7 +361,7 @@ export class URLAnalyzer {
   static extractDomain(url: string): string | null {
     try {
       const parsedUrl = new URL(url);
-      return parsedUrl.hostname;
+      return parsedUrl.hostname.replace(/^www\./, '');
     } catch {
       return null;
     }

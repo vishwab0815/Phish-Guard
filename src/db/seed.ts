@@ -1,6 +1,11 @@
-import { PrismaClient } from '@prisma/client'
+// Environment variables are loaded via --env-file flag in package.json
+import { db } from './index';
+import { modelConfigs, trustedDomains, blockedDomains, threatIntelligence } from './schema';
 
-const prisma = new PrismaClient()
+if (!process.env.DATABASE_URL) {
+  console.error('❌ ERROR: DATABASE_URL is not defined in the environment.');
+  process.exit(1);
+}
 
 const modelDefaults = [
   {
@@ -39,9 +44,9 @@ const modelDefaults = [
     confidenceThreshold: 0.85,
     features: ['nlp_analysis', 'social_engineering_detection', 'urgency_patterns', 'financial_indicators', 'link_detection'],
   },
-]
+];
 
-const trustedDomains = [
+const trustedDomainsSeed = [
   { domain: 'google.com', reason: 'Major tech company', addedBy: 'system' },
   { domain: 'microsoft.com', reason: 'Major tech company', addedBy: 'system' },
   { domain: 'apple.com', reason: 'Major tech company', addedBy: 'system' },
@@ -52,17 +57,17 @@ const trustedDomains = [
   { domain: 'facebook.com', reason: 'Social media platform', addedBy: 'system' },
   { domain: 'twitter.com', reason: 'Social media platform', addedBy: 'system' },
   { domain: 'x.com', reason: 'Social media platform', addedBy: 'system' },
-]
+];
 
-const blockedDomains = [
+const blockedDomainsSeed = [
   { domain: 'phishing-example.com', reason: 'Known phishing domain - impersonates banking sites', addedBy: 'system' },
   { domain: 'malware-test.net', reason: 'Malware distribution site', addedBy: 'system' },
   { domain: 'scam-lottery.org', reason: 'Lottery scam operations', addedBy: 'system' },
   { domain: 'fake-paypal-verify.com', reason: 'PayPal phishing campaign', addedBy: 'system' },
   { domain: 'secure-amazon-update.net', reason: 'Amazon impersonation', addedBy: 'system' },
-]
+];
 
-const threatIntelligence = [
+const threatIntelligenceSeed = [
   {
     domain: 'suspicious-bank-login.com',
     reputation: 15.0,
@@ -89,95 +94,77 @@ const threatIntelligence = [
       categories: ['business', 'technology'],
     },
   },
-  {
-    domain: 'medium-risk-site.net',
-    reputation: 55.0,
-    sources: ['Custom Analysis'],
-    indicators: {
-      blacklisted: false,
-      malware_hosting: false,
-      phishing_reports: 2,
-      ssl_valid: true,
-      recently_registered: true,
-      categories: ['unknown'],
-    },
-  },
-]
+];
 
 async function main() {
-  console.log('🌱 Starting database seeding...')
+  console.log('🌱 Starting database seeding with Drizzle...');
 
   try {
-    // Clear existing data (optional - comment out if you want to keep existing data)
-    console.log('🗑️  Cleaning up existing seed data...')
-    await prisma.threatIntelligence.deleteMany({})
-    await prisma.blockedDomain.deleteMany({})
-    await prisma.trustedDomain.deleteMany({})
-    await prisma.modelConfig.deleteMany({})
+    console.log('🗑️  Cleaning up existing seed data...');
+    await db.delete(threatIntelligence);
+    await db.delete(blockedDomains);
+    await db.delete(trustedDomains);
+    await db.delete(modelConfigs);
 
-    // Seed Model Configurations
-    console.log('📊 Seeding AI model configurations...')
+    console.log('📊 Seeding AI model configurations...');
+    const now = new Date();
     for (const model of modelDefaults) {
-      await prisma.modelConfig.upsert({
-        where: { modelId: model.modelId },
-        update: model,
-        create: model,
-      })
-      console.log(`  ✅ Created model: ${model.name} (${model.modelId})`)
+      await db.insert(modelConfigs).values({
+        id: crypto.randomUUID(),
+        ...model,
+        initializedAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: modelConfigs.modelId,
+        set: {
+          ...model,
+          updatedAt: now,
+        },
+      });
+      console.log(`  ✅ Created model: ${model.name}`);
     }
 
-    // Seed Trusted Domains
-    console.log('🛡️  Seeding trusted domains...')
-    for (const domain of trustedDomains) {
-      await prisma.trustedDomain.upsert({
-        where: { domain: domain.domain },
-        update: domain,
-        create: domain,
-      })
+    console.log('🛡️  Seeding trusted domains...');
+    for (const domain of trustedDomainsSeed) {
+      await db.insert(trustedDomains).values({
+        id: crypto.randomUUID(),
+        ...domain,
+      }).onConflictDoUpdate({
+        target: trustedDomains.domain,
+        set: domain,
+      });
     }
-    console.log(`  ✅ Added ${trustedDomains.length} trusted domains`)
 
-    // Seed Blocked Domains
-    console.log('🚫 Seeding blocked domains...')
-    for (const domain of blockedDomains) {
-      await prisma.blockedDomain.upsert({
-        where: { domain: domain.domain },
-        update: domain,
-        create: domain,
-      })
+    console.log('🚫 Seeding blocked domains...');
+    for (const domain of blockedDomainsSeed) {
+      await db.insert(blockedDomains).values({
+        id: crypto.randomUUID(),
+        ...domain,
+      }).onConflictDoUpdate({
+        target: blockedDomains.domain,
+        set: domain,
+      });
     }
-    console.log(`  ✅ Added ${blockedDomains.length} blocked domains`)
 
-    // Seed Threat Intelligence
-    console.log('🔍 Seeding threat intelligence data...')
-    for (const intel of threatIntelligence) {
-      await prisma.threatIntelligence.upsert({
-        where: { domain: intel.domain },
-        update: intel,
-        create: intel,
-      })
+    console.log('🔍 Seeding threat intelligence data...');
+    for (const intel of threatIntelligenceSeed) {
+      await db.insert(threatIntelligence).values({
+        id: crypto.randomUUID(),
+        ...intel,
+      }).onConflictDoUpdate({
+        target: threatIntelligence.domain,
+        set: intel,
+      });
     }
-    console.log(`  ✅ Added ${threatIntelligence.length} threat intelligence entries`)
 
-    // Print summary
-    console.log('\n✨ Database seeding completed successfully!')
-    console.log('\n📈 Summary:')
-    console.log(`  - AI Models: ${modelDefaults.length}`)
-    console.log(`  - Trusted Domains: ${trustedDomains.length}`)
-    console.log(`  - Blocked Domains: ${blockedDomains.length}`)
-    console.log(`  - Threat Intelligence Entries: ${threatIntelligence.length}`)
-    console.log('\n🚀 Your PhishGuard application is ready to use!')
+    console.log('\n✨ Database seeding completed successfully!');
   } catch (error) {
-    console.error('❌ Error during seeding:', error)
-    throw error
+    console.error('❌ Error during seeding:', error);
+    process.exit(1);
   }
 }
 
-main()
-  .catch((e) => {
-    console.error(e)
-    process.exit(1)
-  })
-  .finally(async () => {
-    await prisma.$disconnect()
-  })
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

@@ -3,7 +3,9 @@
  * Analyzes SSL certificates for security issues and trust indicators
  */
 
-import { prisma } from '@/lib/prisma';
+import { db } from '@/db';
+import { certificateInfo } from '@/db/schema';
+import { eq, desc, sql } from 'drizzle-orm';
 
 export interface SSLAnalysisResult {
   isValid: boolean;
@@ -22,7 +24,7 @@ export interface SSLAnalysisResult {
   trustAnalysis: {
     isSelfSigned: boolean;
     isWildcard: boolean;
-    isEV: boolean; // Extended Validation
+    isEV: boolean;
     chainValid: boolean;
     isExpired: boolean;
     isRevoked: boolean;
@@ -41,7 +43,7 @@ export class SSLValidator {
 
     // Check cache first
     const cached = await this.getCachedCertificate(domain);
-    if (cached && this.isCacheValid(cached.lastChecked)) {
+    if (cached && this.isCacheValid(cached.lastChecked!)) {
       return this.buildResultFromCache(cached);
     }
 
@@ -66,60 +68,18 @@ export class SSLValidator {
       };
     }
 
-    // Analyze certificate
     const trustAnalysis = await this.analyzeTrust(certificateDetails, domain);
 
-    // Calculate risk based on trust analysis
-    if (trustAnalysis.isSelfSigned) {
-      indicators.push('Self-signed certificate detected');
-      riskScore += 40;
-    }
+    if (trustAnalysis.isSelfSigned) { indicators.push('Self-signed certificate detected'); riskScore += 40; }
+    if (trustAnalysis.isExpired) { indicators.push('Certificate has expired'); riskScore += 50; }
+    if (trustAnalysis.isRevoked) { indicators.push('Certificate has been revoked'); riskScore += 50; }
+    if (!trustAnalysis.chainValid) { indicators.push('Certificate chain validation failed'); riskScore += 30; }
+    if (trustAnalysis.hasWeakCipher) { indicators.push('Weak cryptographic algorithm detected'); riskScore += 20; }
+    if (certificateDetails.keySize && certificateDetails.keySize < 2048) { indicators.push(`Weak key size: ${certificateDetails.keySize} bits`); riskScore += 25; }
+    if (this.getCertificateAge(certificateDetails.validFrom) < 7) { indicators.push('Certificate is very new (less than 7 days old)'); riskScore += 15; }
+    if (this.getRemainingValidity(certificateDetails.validUntil) < 30) { indicators.push('Certificate expires soon'); riskScore += 10; }
+    if (trustAnalysis.isEV) { riskScore = Math.max(0, riskScore - 20); }
 
-    if (trustAnalysis.isExpired) {
-      indicators.push('Certificate has expired');
-      riskScore += 50;
-    }
-
-    if (trustAnalysis.isRevoked) {
-      indicators.push('Certificate has been revoked');
-      riskScore += 50;
-    }
-
-    if (!trustAnalysis.chainValid) {
-      indicators.push('Certificate chain validation failed');
-      riskScore += 30;
-    }
-
-    if (trustAnalysis.hasWeakCipher) {
-      indicators.push('Weak cryptographic algorithm detected');
-      riskScore += 20;
-    }
-
-    if (certificateDetails.keySize && certificateDetails.keySize < 2048) {
-      indicators.push(`Weak key size: ${certificateDetails.keySize} bits`);
-      riskScore += 25;
-    }
-
-    // Check certificate age
-    const certAge = this.getCertificateAge(certificateDetails.validFrom);
-    if (certAge < 7) {
-      indicators.push('Certificate is very new (less than 7 days old)');
-      riskScore += 15;
-    }
-
-    // Check remaining validity
-    const remainingDays = this.getRemainingValidity(certificateDetails.validUntil);
-    if (remainingDays < 30) {
-      indicators.push('Certificate expires soon');
-      riskScore += 10;
-    }
-
-    // EV certificates are more trustworthy
-    if (trustAnalysis.isEV) {
-      riskScore = Math.max(0, riskScore - 20);
-    }
-
-    // Cap risk score
     riskScore = Math.min(riskScore, 100);
 
     const result: SSLAnalysisResult = {
@@ -130,15 +90,11 @@ export class SSLValidator {
       trustAnalysis,
     };
 
-    // Cache the result
     await this.cacheCertificate(domain, result);
 
     return result;
   }
 
-  /**
-   * Fetch SSL certificate for domain
-   */
   private static async fetchCertificate(domain: string): Promise<{
     issuer: string;
     subject: string;
@@ -149,52 +105,22 @@ export class SSLValidator {
     algorithm: string;
     keySize?: number;
   } | null> {
-    // In production, use Node's tls module:
-    // const tls = require('tls');
-    // const socket = tls.connect(443, domain, { servername: domain });
-    // const cert = socket.getPeerCertificate();
-
-    // For now, return null (placeholder)
-    // This would be implemented with proper TLS connection
+    // In production, use Node's tls module. 
+    // This is a placeholder for the integrated detection engine.
     return null;
   }
 
-  /**
-   * Analyze certificate trust
-   */
-  private static async analyzeTrust(
-    cert: any,
-    domain: string
-  ): Promise<{
-    isSelfSigned: boolean;
-    isWildcard: boolean;
-    isEV: boolean;
-    chainValid: boolean;
-    isExpired: boolean;
-    isRevoked: boolean;
-    hasWeakCipher: boolean;
-    trustScore: number;
-  }> {
+  private static async analyzeTrust(cert: any, domain: string) {
     const now = new Date();
-
     const isSelfSigned = cert.issuer === cert.subject;
     const isWildcard = cert.subject.includes('*');
     const isExpired = now > cert.validUntil || now < cert.validFrom;
-    const isRevoked = false; // Would check OCSP/CRL in production
-
-    // Check if EV certificate (requires checking issuer OID)
+    const isRevoked = false;
     const isEV = cert.issuer.toLowerCase().includes('extended validation');
-
-    // Validate chain (placeholder)
     const chainValid = !isSelfSigned;
-
-    // Check for weak algorithms
     const weakAlgorithms = ['md5', 'sha1', 'des'];
-    const hasWeakCipher = weakAlgorithms.some(alg =>
-      cert.algorithm.toLowerCase().includes(alg)
-    );
+    const hasWeakCipher = weakAlgorithms.some((alg: string) => cert.algorithm.toLowerCase().includes(alg));
 
-    // Calculate trust score
     let trustScore = 100;
     if (isSelfSigned) trustScore -= 40;
     if (isExpired) trustScore -= 50;
@@ -202,8 +128,6 @@ export class SSLValidator {
     if (!chainValid) trustScore -= 30;
     if (hasWeakCipher) trustScore -= 20;
     if (isEV) trustScore = Math.min(100, trustScore + 20);
-
-    trustScore = Math.max(0, trustScore);
 
     return {
       isSelfSigned,
@@ -213,85 +137,47 @@ export class SSLValidator {
       isExpired,
       isRevoked,
       hasWeakCipher,
-      trustScore,
+      trustScore: Math.max(0, trustScore),
     };
   }
 
-  /**
-   * Get certificate age in days
-   */
   private static getCertificateAge(validFrom: Date): number {
-    const now = new Date();
-    const diffMs = now.getTime() - validFrom.getTime();
-    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    return Math.floor((new Date().getTime() - validFrom.getTime()) / (1000 * 60 * 60 * 24));
   }
 
-  /**
-   * Get remaining validity in days
-   */
   private static getRemainingValidity(validUntil: Date): number {
-    const now = new Date();
-    const diffMs = validUntil.getTime() - now.getTime();
-    return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    return Math.floor((validUntil.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
   }
 
-  /**
-   * Get cached certificate
-   */
   private static async getCachedCertificate(domain: string) {
     try {
-      const certs = await prisma.certificateInfo.findMany({
-        where: { domain },
-        orderBy: { lastChecked: 'desc' },
-        take: 1,
-      });
-
+      const certs = await db.select().from(certificateInfo)
+        .where(eq(certificateInfo.domain, domain))
+        .orderBy(desc(certificateInfo.lastChecked))
+        .limit(1);
       return certs[0] || null;
     } catch {
       return null;
     }
   }
 
-  /**
-   * Check if cache is valid (7 days)
-   */
   private static isCacheValid(lastChecked: Date): boolean {
-    const now = new Date();
-    const cacheAge = now.getTime() - lastChecked.getTime();
-    const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-    return cacheAge < maxAge;
+    return (new Date().getTime() - lastChecked.getTime()) < (7 * 24 * 60 * 60 * 1000);
   }
 
-  /**
-   * Build result from cached data
-   */
   private static buildResultFromCache(cached: any): SSLAnalysisResult {
     const indicators: string[] = [];
-    let riskScore = 100 - cached.trustScore;
-
-    if (cached.isSelfSigned) {
-      indicators.push('Self-signed certificate detected');
-    }
-    if (cached.isRevoked) {
-      indicators.push('Certificate has been revoked');
-    }
-    if (!cached.chainValid) {
-      indicators.push('Certificate chain validation failed');
-    }
-    if (cached.hasWeakCipher) {
-      indicators.push('Weak cryptographic algorithm detected');
-    }
-
+    if (cached.isSelfSigned) indicators.push('Self-signed certificate detected');
+    if (cached.isRevoked) indicators.push('Certificate has been revoked');
+    if (!cached.chainValid) indicators.push('Certificate chain validation failed');
+    if (cached.hasWeakCipher) indicators.push('Weak cryptographic algorithm detected');
+    
     const now = new Date();
-    const isExpired = now > cached.validUntil || now < cached.validFrom;
-    if (isExpired) {
-      indicators.push('Certificate has expired');
-    }
+    if (now > cached.validUntil || now < cached.validFrom) indicators.push('Certificate has expired');
 
     return {
       isValid: true,
-      riskScore,
+      riskScore: 100 - (cached.trustScore || 0),
       indicators,
       certificateDetails: {
         issuer: cached.issuer,
@@ -308,7 +194,7 @@ export class SSLValidator {
         isWildcard: cached.isWildcard,
         isEV: cached.isEV,
         chainValid: cached.chainValid,
-        isExpired,
+        isExpired: now > cached.validUntil || now < cached.validFrom,
         isRevoked: cached.isRevoked,
         hasWeakCipher: cached.hasWeakCipher,
         trustScore: cached.trustScore,
@@ -316,61 +202,42 @@ export class SSLValidator {
     };
   }
 
-  /**
-   * Cache certificate information
-   */
-  private static async cacheCertificate(
-    domain: string,
-    result: SSLAnalysisResult
-  ): Promise<void> {
+  private static async cacheCertificate(domain: string, result: SSLAnalysisResult) {
     if (!result.certificateDetails) return;
-
     const now = new Date();
 
     try {
-      await prisma.certificateInfo.create({
-        data: {
-          domain,
-          issuer: result.certificateDetails.issuer,
-          subject: result.certificateDetails.subject,
-          validFrom: result.certificateDetails.validFrom,
-          validUntil: result.certificateDetails.validUntil,
-          serialNumber: result.certificateDetails.serialNumber,
-          fingerprint: result.certificateDetails.fingerprint,
-          algorithm: result.certificateDetails.algorithm,
-          keySize: result.certificateDetails.keySize,
-          isSelfSigned: result.trustAnalysis.isSelfSigned,
-          isWildcard: result.trustAnalysis.isWildcard,
-          isEV: result.trustAnalysis.isEV,
-          chainValid: result.trustAnalysis.chainValid,
-          chainLength: 1,
-          isRevoked: result.trustAnalysis.isRevoked,
-          hasWeakCipher: result.trustAnalysis.hasWeakCipher,
-          trustScore: result.trustAnalysis.trustScore,
-          sanDomains: [], // Would extract from cert.subjectAltName
-          ctLogged: false, // Would check Certificate Transparency logs
-          ctLogCount: 0,
+      await db.insert(certificateInfo).values({
+        domain,
+        issuer: result.certificateDetails.issuer,
+        subject: result.certificateDetails.subject,
+        validFrom: result.certificateDetails.validFrom,
+        validUntil: result.certificateDetails.validUntil,
+        serialNumber: result.certificateDetails.serialNumber,
+        fingerprint: result.certificateDetails.fingerprint,
+        algorithm: result.certificateDetails.algorithm,
+        keySize: result.certificateDetails.keySize,
+        isSelfSigned: result.trustAnalysis.isSelfSigned,
+        isWildcard: result.trustAnalysis.isWildcard,
+        isEV: result.trustAnalysis.isEV,
+        chainValid: result.trustAnalysis.chainValid,
+        isRevoked: result.trustAnalysis.isRevoked,
+        hasWeakCipher: result.trustAnalysis.hasWeakCipher,
+        trustScore: result.trustAnalysis.trustScore,
+        lastChecked: now,
+        checkCount: 1,
+      }).onConflictDoUpdate({
+        target: certificateInfo.fingerprint,
+        set: {
           lastChecked: now,
-          checkCount: 1,
+          checkCount: sql`${certificateInfo.checkCount} + 1`,
         },
       });
     } catch (error) {
-      // If fingerprint exists, update instead
-      if (result.certificateDetails.fingerprint) {
-        await prisma.certificateInfo.update({
-          where: { fingerprint: result.certificateDetails.fingerprint },
-          data: {
-            lastChecked: now,
-            checkCount: { increment: 1 },
-          },
-        });
-      }
+      console.error('Failed to cache certificate:', error);
     }
   }
 
-  /**
-   * Verify SSL certificate is valid for domain
-   */
   static async verifyCertificate(url: string): Promise<boolean> {
     try {
       const domain = new URL(url).hostname;

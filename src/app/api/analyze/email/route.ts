@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/db';
+import { users, modelConfigs, scanResults } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { EmailAnalyzer } from '@/services/email/emailAnalyzer'
 
 export async function POST(request: NextRequest) {
@@ -14,9 +16,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const modelConfig = await prisma.modelConfig.findUnique({
-      where: { modelId: 'email_scanner_v2' }
-    })
+    const modelConfig = await db.query.modelConfigs.findFirst({
+      where: eq(modelConfigs.modelId, 'email_scanner_v2'),
+    });
 
     if (!modelConfig || modelConfig.state !== 'ACTIVE') {
       return NextResponse.json(
@@ -36,25 +38,48 @@ export async function POST(request: NextRequest) {
       attachments,
     })
 
+    // Ensure user exists if userId is provided
+    let validUserId: string | null = null;
+
+    if (user_id) {
+      const userExists = await db.query.users.findFirst({
+        where: eq(users.id, user_id),
+      });
+
+      // If user doesn't exist, create a minimal user record
+      if (!userExists) {
+        try {
+          await db.insert(users).values({
+            id: user_id,
+            name: 'Demo User',
+          });
+          validUserId = user_id;
+        } catch {
+          // If creation fails (race condition), just use null
+          validUserId = null;
+        }
+      } else {
+        validUserId = user_id;
+      }
+    }
+
     // Save scan result
-    const scanResult = await prisma.scanResult.create({
-      data: {
-        userId: user_id,
-        type: 'EMAIL',
-        target: `From: ${from} - Subject: ${subject}`,
-        confidence: analysis.confidence,
-        threatLevel: analysis.threatLevel,
-        riskScore: analysis.riskScore,
-        indicators: analysis.indicators,
-        recommendations: analysis.recommendations,
-        modelVersion: modelConfig.version,
-        metadata: {
-          header_analysis: analysis.headerAnalysis,
-          content_analysis: analysis.contentAnalysis,
-          sender_reputation: analysis.senderReputation,
-        },
+    const [scanResult] = await db.insert(scanResults).values({
+      userId: validUserId,
+      type: 'EMAIL',
+      target: `From: ${from} - Subject: ${subject}`,
+      confidence: analysis.confidence,
+      threatLevel: analysis.threatLevel as any,
+      riskScore: analysis.riskScore,
+      indicators: analysis.indicators,
+      recommendations: analysis.recommendations,
+      modelVersion: modelConfig.version,
+      metadata: {
+        header_analysis: analysis.headerAnalysis,
+        content_analysis: analysis.contentAnalysis,
+        sender_reputation: analysis.senderReputation,
       },
-    })
+    }).returning();
 
     return NextResponse.json({
       success: true,
@@ -78,7 +103,7 @@ export async function POST(request: NextRequest) {
           suspicious_attachments: analysis.contentAnalysis.hasSuspiciousAttachments,
         },
         user_id: scanResult.userId,
-        timestamp: scanResult.timestamp.toISOString(),
+        timestamp: scanResult.timestamp?.toISOString() || new Date().toISOString(),
         model_version: scanResult.modelVersion,
       },
     })

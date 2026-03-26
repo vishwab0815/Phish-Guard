@@ -3,7 +3,9 @@
  * Provides URL and file scanning using VirusTotal's threat intelligence
  */
 
-import { prisma } from '@/lib/prisma';
+import { db } from '@/db';
+import { scanResults, externalScanResults } from '@/db/schema';
+import { eq, and, desc, gte, count } from 'drizzle-orm';
 
 export interface VirusTotalResult {
   isPhishing: boolean;
@@ -27,7 +29,7 @@ export class VirusTotalService {
   static async analyzeURL(url: string): Promise<VirusTotalResult> {
     // Check cache first
     const cached = await this.getCachedResult(url, 'virustotal');
-    if (cached && this.isCacheValid(cached.scanDate)) {
+    if (cached && this.isCacheValid(cached.scanDate || new Date(0))) {
       return this.buildResultFromCache(cached);
     }
 
@@ -40,7 +42,7 @@ export class VirusTotalService {
     try {
       // Submit URL for analysis
       const urlId = this.encodeURL(url);
-      const response = await this.fetchAnalysis(urlId);
+      const response = await this.fetchAnalysis(url, urlId);
 
       const result = this.parseResponse(response);
 
@@ -69,7 +71,7 @@ export class VirusTotalService {
   /**
    * Fetch analysis from VirusTotal
    */
-  private static async fetchAnalysis(urlId: string): Promise<any> {
+  private static async fetchAnalysis(originalUrl: string, urlId: string): Promise<any> {
     const response = await fetch(`${this.API_BASE_URL}/urls/${urlId}`, {
       method: 'GET',
       headers: {
@@ -80,8 +82,8 @@ export class VirusTotalService {
 
     if (!response.ok) {
       if (response.status === 404) {
-        // URL not in database, submit it
-        return await this.submitURL(urlId);
+        // URL not in database, submit it with original URL
+        return await this.submitURL(originalUrl);
       }
       throw new Error(`VirusTotal API error: ${response.statusText}`);
     }
@@ -224,29 +226,26 @@ export class VirusTotalService {
    */
   private static async getCachedResult(url: string, provider: string) {
     try {
-      // We need the scanResultId to fetch external scan results
-      // For now, we'll search by looking at recent scans
-      const recentScans = await prisma.scanResult.findMany({
-        where: {
-          target: url,
-          type: 'URL',
-        },
-        orderBy: { timestamp: 'desc' },
-        take: 1,
+      // Find recent scan result
+      const recentScan = await db.query.scanResults.findFirst({
+        where: and(
+          eq(scanResults.target, url),
+          eq(scanResults.type, 'URL')
+        ),
+        orderBy: [desc(scanResults.timestamp)],
       });
 
-      if (recentScans.length === 0) return null;
+      if (!recentScan) return null;
 
-      const externalResults = await prisma.externalScanResult.findMany({
-        where: {
-          scanResultId: recentScans[0].id,
-          provider,
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 1,
+      const externalResult = await db.query.externalScanResults.findFirst({
+        where: and(
+          eq(externalScanResults.scanResultId, recentScan.id),
+          eq(externalScanResults.provider, provider)
+        ),
+        orderBy: [desc(externalScanResults.createdAt)],
       });
 
-      return externalResults[0] || null;
+      return externalResult || null;
     } catch {
       return null;
     }
@@ -285,36 +284,36 @@ export class VirusTotalService {
    */
   private static async cacheResult(url: string, result: VirusTotalResult): Promise<void> {
     try {
-      // Find or create scan result
-      const scanResult = await prisma.scanResult.findFirst({
-        where: {
-          target: url,
-          type: 'URL',
-        },
-        orderBy: { timestamp: 'desc' },
+      // Find recent scan result
+      const scanResultData = await db.query.scanResults.findFirst({
+        where: and(
+          eq(scanResults.target, url),
+          eq(scanResults.type, 'URL')
+        ),
+        orderBy: [desc(scanResults.timestamp)],
       });
 
-      if (!scanResult) {
+      if (!scanResultData) {
         console.warn('No scan result found to attach VirusTotal data');
         return;
       }
 
       // Create external scan result
-      await prisma.externalScanResult.create({
-        data: {
-          scanResultId: scanResult.id,
-          provider: 'virustotal',
-          rawResponse: result.rawResponse || {},
-          isPhishing: result.isPhishing,
-          isMalware: result.isMalware,
-          isSpam: result.isSpam,
-          threatType: result.threatCategories[0],
-          confidence: result.confidence,
-          detectionCount: result.detectionCount,
-          totalEngines: result.totalEngines,
-          scanDate: result.scanDate,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
-        },
+      await db.insert(externalScanResults).values({
+        id: crypto.randomUUID(),
+        scanResultId: scanResultData.id,
+        provider: 'virustotal',
+        rawResponse: result.rawResponse || {},
+        isPhishing: result.isPhishing,
+        isMalware: result.isMalware,
+        isSpam: result.isSpam,
+        threatType: result.threatCategories[0],
+        confidence: result.confidence,
+        detectionCount: result.detectionCount,
+        totalEngines: result.totalEngines,
+        scanDate: result.scanDate,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+        createdAt: new Date(),
       });
     } catch (error) {
       console.error('Failed to cache VirusTotal result:', error);
@@ -330,12 +329,38 @@ export class VirusTotalService {
     resetTime: Date;
   }> {
     // VirusTotal free tier: 4 requests/minute, 500/day
-    // This would be tracked in the database
+    const DAILY_LIMIT = 500;
+    const resetTime = new Date();
+    resetTime.setHours(24, 0, 0, 0); // Reset at midnight
 
-    return {
-      remaining: 500,
-      limit: 500,
-      resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    };
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const [result] = await db
+        .select({ value: count() })
+        .from(externalScanResults)
+        .where(
+          and(
+            eq(externalScanResults.provider, 'virustotal'),
+            gte(externalScanResults.createdAt, todayStart)
+          )
+        );
+
+      const todayUsage = result.value;
+
+      return {
+        remaining: Math.max(0, DAILY_LIMIT - todayUsage),
+        limit: DAILY_LIMIT,
+        resetTime,
+      };
+    } catch {
+      // Fallback if DB query fails
+      return {
+        remaining: DAILY_LIMIT,
+        limit: DAILY_LIMIT,
+        resetTime,
+      };
+    }
   }
 }

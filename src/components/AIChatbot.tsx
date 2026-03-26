@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -6,14 +7,14 @@ import { Badge } from "./ui/badge";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
 import { Alert, AlertDescription } from "./ui/alert";
-import { 
-  Bot, 
-  User, 
-  Send, 
-  Lightbulb, 
-  Shield, 
-  AlertTriangle, 
-  CheckCircle, 
+import {
+  Bot,
+  User,
+  Send,
+  Lightbulb,
+  Shield,
+  AlertTriangle,
+  CheckCircle,
   Loader2,
   Terminal,
   Brain,
@@ -618,15 +619,15 @@ ${isKnownThreat ?
     return helpText;
   };
 
-  const getAIResponse = (userMessage: string): { content: string; type: Message['type']; metadata?: any } => {
+  const getAIResponse = async (userMessage: string): Promise<{ content: string; type: Message['type']; metadata?: any }> => {
     const message = userMessage.trim();
-    
+
     // Check if it's a command
     if (message.startsWith('/')) {
       const parts = message.split(' ');
       const command = parts[0].toLowerCase();
       const args = parts.slice(1);
-      
+
       return {
         content: processCommand(command, args),
         type: 'command',
@@ -634,9 +635,44 @@ ${isKnownThreat ?
       };
     }
 
-    // AI conversational responses for non-commands
+    // Call real OpenAI API for natural language queries
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          context: messages.slice(-5).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.content }))
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        return {
+          content: data.response,
+          type: data.fallback ? 'text' : 'analysis',
+          metadata: data.usage ? {
+            tokens: data.usage.total_tokens,
+            model: data.model
+          } : undefined
+        };
+      }
+
+      // Fallback if API call succeeded but no response
+      throw new Error('No response from AI');
+    } catch (error) {
+      console.error('OpenAI error:', error);
+      // Fallback to local responses
+      return getLocalAIResponse(message);
+    }
+  };
+
+  const getLocalAIResponse = (userMessage: string): { content: string; type: Message['type']; metadata?: any } => {
+    const message = userMessage.trim();
+
     const lowerMessage = message.toLowerCase();
-    
+
     if (lowerMessage.includes('latest') && lowerMessage.includes('threat')) {
       return {
         content: `🔥 **Latest Threat Intelligence Update**
@@ -763,12 +799,13 @@ Type \`/help\` for a complete command reference.`,
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const messageToProcess = inputMessage;
     setInputMessage("");
     setIsTyping(true);
 
-    // Simulate AI processing time
-    setTimeout(() => {
-      const aiResponseData = getAIResponse(inputMessage);
+    try {
+      // Get AI response (either from OpenAI or local fallback)
+      const aiResponseData = await getAIResponse(messageToProcess);
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
         content: aiResponseData.content,
@@ -777,10 +814,21 @@ Type \`/help\` for a complete command reference.`,
         type: aiResponseData.type,
         metadata: aiResponseData.metadata
       };
-      
+
       setMessages(prev => [...prev, aiResponse]);
+    } catch (error) {
+      console.error('Error getting AI response:', error);
+      const errorResponse: Message = {
+        id: (Date.now() + 1).toString(),
+        content: '⚠️ Error processing your request. Please try again or use `/help` for available commands.',
+        sender: 'ai',
+        timestamp: new Date(),
+        type: 'warning'
+      };
+      setMessages(prev => [...prev, errorResponse]);
+    } finally {
       setIsTyping(false);
-    }, 800 + Math.random() * 1500);
+    }
   };
 
   const handleSuggestedQuestion = (question: string) => {
@@ -805,17 +853,39 @@ Type \`/help\` for a complete command reference.`,
   };
 
   return (
-    <div className="w-full max-w-full space-y-6">
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5 }}
+      className="w-full max-w-full space-y-6"
+    >
       {/* Main Chat Interface */}
-      <Card className="phish-card w-full">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2">
-            <Brain className="w-5 h-5 text-purple-500 animate-pulse-soft" />
-            AI Security Command Center
-            <Badge variant="outline" className="ml-2 ai-assistant-glow">
-              v2.1 Enhanced
-            </Badge>
-          </CardTitle>
+      <motion.div
+        initial={{ scale: 0.95 }}
+        animate={{ scale: 1 }}
+        transition={{ duration: 0.3 }}
+      >
+        <Card className="phish-card w-full">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2">
+              <motion.div
+                animate={{
+                  scale: [1, 1.2, 1],
+                  rotate: [0, 5, -5, 0]
+                }}
+                transition={{
+                  duration: 2,
+                  repeat: Infinity,
+                  repeatDelay: 3
+                }}
+              >
+                <Brain className="w-5 h-5 text-purple-500" />
+              </motion.div>
+              AI Security Command Center
+              <Badge variant="outline" className="ml-2 ai-assistant-glow">
+                v2.1 Enhanced
+              </Badge>
+            </CardTitle>
           <CardDescription>
             Advanced cybersecurity AI with command-line interface and real-time threat analysis
           </CardDescription>
@@ -829,13 +899,23 @@ Type \`/help\` for a complete command reference.`,
               className="flex-1 overflow-y-auto p-4 space-y-4"
               style={{ maxHeight: '384px' }}
             >
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex gap-3 ${
-                    message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'
-                  }`}
-                >
+              <AnimatePresence mode="popLayout">
+                {messages.map((message, index) => (
+                  <motion.div
+                    key={message.id}
+                    initial={{ opacity: 0, y: 20, scale: 0.8 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{
+                      type: "spring",
+                      stiffness: 500,
+                      damping: 30,
+                      delay: index * 0.05
+                    }}
+                    className={`flex gap-3 ${
+                      message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'
+                    }`}
+                  >
                   <div className="flex-shrink-0">
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
                       message.sender === 'user' 
@@ -880,8 +960,9 @@ Type \`/help\` for a complete command reference.`,
                       {message.type === 'analysis' && <Search className="w-3 h-3" />}
                     </div>
                   </div>
-                </div>
-              ))}
+                  </motion.div>
+                ))}
+              </AnimatePresence>
               
               {/* Typing Indicator */}
               {isTyping && (
@@ -975,10 +1056,16 @@ Type \`/help\` for a complete command reference.`,
             </Button>
           </div>
         </CardContent>
-      </Card>
+        </Card>
+      </motion.div>
 
       {/* Enhanced Status Dashboard */}
-      <Card className="phish-card">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.2 }}
+      >
+        <Card className="phish-card">
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="flex items-center gap-3 p-3 border rounded-lg phish-card">
@@ -1011,7 +1098,8 @@ Type \`/help\` for a complete command reference.`,
             </div>
           </div>
         </CardContent>
-      </Card>
-    </div>
+        </Card>
+      </motion.div>
+    </motion.div>
   );
 }

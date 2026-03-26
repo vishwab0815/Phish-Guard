@@ -3,7 +3,7 @@
  * Comprehensive email threat detection including headers, attachments, and content
  */
 
-import { ThreatLevel } from '@prisma/client';
+import { ThreatLevel } from '@/db/schema';
 
 export interface EmailAnalysisResult {
   isPhishing: boolean;

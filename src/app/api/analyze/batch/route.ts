@@ -1,10 +1,7 @@
-/**
- * Batch URL Analysis API
- * Allows scanning multiple URLs in a single request
- */
-
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { db } from '@/db';
+import { modelConfigs, scanJobs, scanResults } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { MasterDetector } from '@/services/detection/masterDetector';
 
 interface BatchRequest {
@@ -50,8 +47,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Get model config
-    const modelConfig = await prisma.modelConfig.findUnique({
-      where: { modelId: 'url_analyzer_v1' },
+    const modelConfig = await db.query.modelConfigs.findFirst({
+      where: eq(modelConfigs.modelId, 'url_analyzer_v1'),
     });
 
     if (!modelConfig || modelConfig.state !== 'ACTIVE') {
@@ -155,9 +152,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Find the scan job
-    const scanJob = await prisma.scanJob.findUnique({
-      where: { id: jobId },
-      include: {
+    const scanJob = await db.query.scanJobs.findFirst({
+      where: eq(scanJobs.id, jobId),
+      with: {
         scanResult: true,
       },
     });

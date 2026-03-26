@@ -39,7 +39,9 @@ interface ModelConfig {
 class BackendServiceClass {
   private baseUrl: string;
   private headers: { [key: string]: string };
-  private backendAvailable: boolean = false;
+  private backendAvailable: boolean = true; // Start optimistic
+  private lastAvailabilityCheck: number = 0;
+  private readonly RECOVERY_INTERVAL_MS = 30000; // Re-check backend every 30s
 
   constructor() {
     // Use Next.js API routes (relative paths for same-origin requests)
@@ -48,49 +50,50 @@ class BackendServiceClass {
       'Content-Type': 'application/json',
     };
 
-    // Test backend availability on initialization
-    this.testBackendAvailability();
+    // No need to test on initialization - will test on first actual request
   }
 
   private async testBackendAvailability() {
     try {
-      console.log('Testing backend availability...');
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-      
+      const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+
       const response = await fetch(`${this.baseUrl}/health`, {
         method: 'GET',
         headers: this.headers,
         signal: controller.signal
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       if (response.ok) {
         this.backendAvailable = true;
-        console.log('Backend is available');
       } else {
         this.backendAvailable = false;
-        console.warn('Backend responded with error:', response.status);
       }
     } catch (error) {
       this.backendAvailable = false;
-      console.warn('Backend is not available, using fallback mode:', error instanceof Error ? error.message : String(error));
+      // Silently fail - fallback will be used automatically
     }
   }
 
   private async makeRequest(endpoint: string, options: RequestInit = {}) {
-    // If backend is known to be unavailable, throw immediately
+    // If backend is known to be unavailable, periodically re-check
     if (!this.backendAvailable) {
-      throw new Error('Backend service unavailable - using local fallback');
+      const now = Date.now();
+      if (now - this.lastAvailabilityCheck > this.RECOVERY_INTERVAL_MS) {
+        this.lastAvailabilityCheck = now;
+        await this.testBackendAvailability();
+      }
+      if (!this.backendAvailable) {
+        throw new Error('Backend service unavailable');
+      }
     }
 
     try {
-      console.log(`Making request to: ${this.baseUrl}${endpoint}`);
-      
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-      
+
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
         headers: {
@@ -103,23 +106,16 @@ class BackendServiceClass {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Request failed: ${response.status} - ${errorText}`);
-        
         // Mark backend as unavailable on 500+ errors
         if (response.status >= 500) {
           this.backendAvailable = false;
         }
-        
-        throw new Error(`Request failed: ${response.status} - ${errorText}`);
+
+        throw new Error(`Request failed: ${response.status}`);
       }
 
-      const result = await response.json();
-      console.log(`Request successful for ${endpoint}:`, result);
-      return result;
+      return await response.json();
     } catch (error) {
-      console.error(`Backend request failed for ${endpoint}:`, error);
-
       // Mark backend as unavailable on network errors
       if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('fetch'))) {
         this.backendAvailable = false;
@@ -136,15 +132,14 @@ class BackendServiceClass {
       if (!this.backendAvailable) {
         await this.testBackendAvailability();
       }
-      
+
       if (this.backendAvailable) {
         return await this.makeRequest('/health');
       } else {
         throw new Error('Backend marked as unavailable');
       }
     } catch (error) {
-      console.error('Health check failed:', error);
-      // Return fallback health status
+      // Return fallback health status silently
       return {
         success: false,
         status: 'offline',
@@ -160,8 +155,7 @@ class BackendServiceClass {
       const query = userId ? `?user_id=${userId}` : '';
       return await this.makeRequest(`/stats${query}`);
     } catch (error) {
-      console.error('Failed to get stats, returning fallback:', error);
-      // Return fallback statistics
+      // Return fallback statistics silently
       return {
         success: true,
         stats: {
@@ -187,8 +181,7 @@ class BackendServiceClass {
       const result = await this.makeRequest('/models');
       return result;
     } catch (error) {
-      console.error('Failed to get models, returning fallback:', error);
-      // Return fallback model configuration
+      // Return fallback model configuration silently
       return {
         success: true,
         models: [
@@ -248,7 +241,7 @@ class BackendServiceClass {
         body: JSON.stringify({ url, user_id: userId })
       });
     } catch (error) {
-      console.error('URL analysis failed, using local fallback:', error);
+      // Use local fallback silently
       return this.generateLocalUrlAnalysis(url, userId);
     }
   }
@@ -260,7 +253,7 @@ class BackendServiceClass {
         body: JSON.stringify({ content, headers, user_id: userId })
       });
     } catch (error) {
-      console.error('Email analysis failed, using local fallback:', error);
+      // Use local fallback silently
       return this.generateLocalEmailAnalysis(content, headers, userId);
     }
   }
@@ -272,7 +265,7 @@ class BackendServiceClass {
         body: JSON.stringify({ message, context, user_id: userId })
       });
     } catch (error) {
-      console.error('Message analysis failed, using local fallback:', error);
+      // Use local fallback silently
       return this.generateLocalMessageAnalysis(message, context, userId);
     }
   }
@@ -283,7 +276,7 @@ class BackendServiceClass {
       const query = userId ? `?user_id=${userId}` : '';
       return await this.makeRequest(`/scans${query}`);
     } catch (error) {
-      console.error('Failed to get scans, returning empty array:', error);
+      // Return empty array silently
       return {
         success: true,
         scans: []
@@ -314,6 +307,10 @@ class BackendServiceClass {
 
   generateUserId(): string {
     // Generate a simple session-based user ID for demo purposes
+    if (typeof window === 'undefined') {
+      // SSR context — return a temporary ID
+      return `user_ssr_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+    }
     let userId = localStorage.getItem('phishguard_user_id');
     if (!userId) {
       userId = `user_${Date.now()}_${Math.random().toString(36).substring(2)}`;
@@ -509,6 +506,61 @@ class BackendServiceClass {
     };
 
     return recommendations[threat_level] || recommendations['SAFE'];
+  }
+
+  // ==========================================
+  // Settings API Methods
+  // ==========================================
+
+  async getSettings(userId?: string): Promise<any> {
+    try {
+      const uid = userId || this.generateUserId();
+      return await this.makeRequest(`/settings?user_id=${uid}`);
+    } catch {
+      return {
+        success: true,
+        settings: {
+          realTimeScanning: true,
+          autoQuarantine: false,
+          detectionSensitivity: 75,
+          defaultAction: 'warn',
+          emailAlerts: true,
+          desktopAlerts: true,
+          dailySummary: false,
+          securityLevel: 'medium',
+          dataRetentionDays: 30,
+        },
+        isDefault: true,
+      };
+    }
+  }
+
+  async saveSettings(settings: any, userId?: string): Promise<any> {
+    try {
+      const uid = userId || this.generateUserId();
+      return await this.makeRequest('/settings', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: uid, settings }),
+      });
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      return { success: false, error: 'Failed to save settings' };
+    }
+  }
+
+  // ==========================================
+  // Scan Deletion
+  // ==========================================
+
+  async deleteScan(scanId: string): Promise<any> {
+    try {
+      return await this.makeRequest(`/scans/${scanId}`, {
+        method: 'DELETE',
+      });
+    } catch (error) {
+      console.error('Failed to delete scan:', error);
+      return { success: false, error: 'Failed to delete scan' };
+    }
   }
 }
 

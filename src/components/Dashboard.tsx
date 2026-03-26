@@ -56,7 +56,7 @@ export function Dashboard({ backendService }: DashboardProps) {
             { 
               label: "Total Scans Today", 
               value: stats.total_scans || 0, 
-              change: stats.recent_activity > 0 ? `+${Math.round((stats.recent_activity / stats.total_scans) * 100)}%` : "+0%", 
+              change: stats.recent_activity > 0 && stats.total_scans > 0 ? `+${Math.round((stats.recent_activity / stats.total_scans) * 100)}%` : "+0%", 
               type: 'safe' 
             },
             { 
@@ -313,9 +313,9 @@ export function Dashboard({ backendService }: DashboardProps) {
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span>Protection Level</span>
-                <span className="font-medium">94/100</span>
+                <span className="font-medium">{threatStats[3]?.value || 0}/100</span>
               </div>
-              <Progress value={94} className="w-full" />
+              <Progress value={threatStats[3]?.value || 0} className="w-full" />
               <p className="text-sm text-muted-foreground">
                 Excellent protection. Continue regular scanning to maintain security.
               </p>
@@ -345,7 +345,7 @@ export function Dashboard({ backendService }: DashboardProps) {
                   <p className="text-sm text-muted-foreground">Start scanning URLs, emails, or files to see results here</p>
                 </div>
               ) : (
-                recentScans.concat(fallbackScans).slice(0, 4).map((scan) => (
+                (recentScans.length > 0 ? recentScans : fallbackScans).slice(0, 4).map((scan) => (
                 <Tooltip key={scan.id}>
                   <TooltipTrigger asChild>
                     <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors cursor-pointer">

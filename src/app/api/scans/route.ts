@@ -1,18 +1,18 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { NextResponse } from 'next/server';
+import { db } from '@/db';
+import { scanResults } from '@/db/schema';
+import { desc, eq } from 'drizzle-orm';
 
-export async function GET(request: NextRequest) {
+export async function GET(request: Request) {
   try {
-    const searchParams = request.nextUrl.searchParams
-    const user_id = searchParams.get('user_id')
+    const searchParams = new URL(request.url).searchParams;
+    const user_id = searchParams.get('user_id');
 
-    const where = user_id ? { userId: user_id } : {}
-
-    const scans = await prisma.scanResult.findMany({
-      where,
-      orderBy: { timestamp: 'desc' },
-      take: 100, // Limit to 100 most recent scans
-    })
+    const scans = await db.query.scanResults.findMany({
+      where: user_id ? eq(scanResults.userId, user_id) : undefined,
+      orderBy: [desc(scanResults.timestamp)],
+      limit: 100,
+    });
 
     return NextResponse.json({
       success: true,
@@ -24,19 +24,19 @@ export async function GET(request: NextRequest) {
           confidence: scan.confidence,
           threat_level: scan.threatLevel,
           risk_score: scan.riskScore,
-          indicators: scan.indicators,
-          recommendations: scan.recommendations,
+          indicators: scan.indicators || [],
+          recommendations: scan.recommendations || [],
         },
         user_id: scan.userId,
-        timestamp: scan.timestamp.toISOString(),
+        timestamp: scan.timestamp?.toISOString(),
         model_version: scan.modelVersion,
       })),
-    })
+    });
   } catch (error) {
-    console.error('Error fetching scans:', error)
+    console.error('Error fetching scans:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to fetch scan history' },
       { status: 500 }
-    )
+    );
   }
 }

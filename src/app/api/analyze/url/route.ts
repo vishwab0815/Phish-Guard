@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/db';
+import { modelConfigs, scanResults } from '@/db/schema';
+import { eq, and, desc } from 'drizzle-orm';
 import { MasterDetector } from '@/services/detection/masterDetector'
 
 export async function POST(request: NextRequest) {
@@ -15,9 +17,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Get model config
-    const modelConfig = await prisma.modelConfig.findUnique({
-      where: { modelId: 'url_analyzer_v1' }
-    })
+    const modelConfig = await db.query.modelConfigs.findFirst({
+      where: eq(modelConfigs.modelId, 'url_analyzer_v1'),
+    });
 
     if (!modelConfig || modelConfig.state !== 'ACTIVE') {
       return NextResponse.json(
@@ -32,15 +34,13 @@ export async function POST(request: NextRequest) {
     const analysis = await MasterDetector.analyzeURL(url, user_id)
 
     // Retrieve the saved scan result
-    const scanResult = await prisma.scanResult.findFirst({
-      where: {
-        target: url,
-        userId: user_id,
-      },
-      orderBy: {
-        timestamp: 'desc',
-      },
-    })
+    const scanResult = await db.query.scanResults.findFirst({
+      where: and(
+        eq(scanResults.target, url),
+        user_id ? eq(scanResults.userId, user_id) : undefined
+      ),
+      orderBy: [desc(scanResults.timestamp)],
+    });
 
     if (!scanResult) {
       return NextResponse.json(
@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
           risk_score: scanResult.riskScore,
           indicators: scanResult.indicators,
           recommendations: scanResult.recommendations,
+          riskBreakdown: analysis.riskBreakdown, // Include actual backend risk breakdown
           scan_duration_ms: scanResult.scanDuration,
           layers: {
             static_analysis: analysis.layers.staticAnalysis ? 'completed' : 'skipped',
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
           },
         },
         user_id: scanResult.userId,
-        timestamp: scanResult.timestamp.toISOString(),
+        timestamp: scanResult.timestamp?.toISOString() || new Date().toISOString(),
         model_version: scanResult.modelVersion,
       },
     })

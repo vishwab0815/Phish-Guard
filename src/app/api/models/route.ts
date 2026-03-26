@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { NextResponse } from 'next/server';
+import { db } from '@/db';
+import { modelConfigs } from '@/db/schema';
 
 const MODEL_DEFAULTS = [
   {
@@ -39,34 +40,19 @@ const MODEL_DEFAULTS = [
 export async function GET() {
   try {
     // Check if models exist, if not create them
-    const existingModels = await prisma.modelConfig.findMany()
+    let existingModels = await db.query.modelConfigs.findMany();
 
     if (existingModels.length === 0) {
       // Initialize models
-      await prisma.modelConfig.createMany({
-        data: MODEL_DEFAULTS.map(model => ({
+      await db.insert(modelConfigs).values(
+        MODEL_DEFAULTS.map(model => ({
           ...model,
           state: 'ACTIVE' as const,
-        })),
-      })
+        }))
+      );
 
       // Fetch the newly created models
-      const models = await prisma.modelConfig.findMany()
-
-      return NextResponse.json({
-        success: true,
-        models: models.map(model => ({
-          id: model.modelId,
-          config: {
-            state: model.state,
-            version: model.version,
-            confidence_threshold: model.confidenceThreshold,
-            features: model.features,
-            initialized_at: model.initializedAt,
-            updated_at: model.updatedAt,
-          },
-        })),
-      })
+      existingModels = await db.query.modelConfigs.findMany();
     }
 
     return NextResponse.json({
@@ -78,19 +64,19 @@ export async function GET() {
           version: model.version,
           confidence_threshold: model.confidenceThreshold,
           features: model.features,
-          initialized_at: model.initializedAt,
-          updated_at: model.updatedAt,
+          initialized_at: model.initializedAt?.toISOString(),
+          updated_at: model.updatedAt?.toISOString(),
         },
       })),
-    })
+    });
   } catch (error) {
-    console.error('Error fetching models:', error)
+    console.error('Error fetching models:', error);
     return NextResponse.json(
       {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to fetch models',
       },
       { status: 500 }
-    )
+    );
   }
 }

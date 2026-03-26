@@ -1,12 +1,11 @@
 'use client'
 
-import { Toaster } from '@/components/ui/sonner'
+import * as React from 'react'
 
 export function ClientProviders({ children }: { children: React.ReactNode }) {
   return (
     <>
       {children}
-      <Toaster />
     </>
   )
 }

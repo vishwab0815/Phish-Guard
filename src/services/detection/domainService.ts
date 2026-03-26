@@ -3,7 +3,9 @@
  * Performs WHOIS lookups, DNS queries, and domain reputation analysis
  */
 
-import { prisma } from '@/lib/prisma';
+import { db } from '@/db';
+import { blockedDomains, domainIntelligence, threatIntelligence, trustedDomains } from '@/db/schema';
+import { eq, and, gte } from 'drizzle-orm';
 
 export interface DomainAnalysisResult {
   domain: string;
@@ -36,12 +38,11 @@ export class DomainService {
    * Analyze domain with caching
    */
   static async analyze(domain: string): Promise<DomainAnalysisResult> {
-    // Clean domain (remove protocol, path, etc.)
     const cleanDomain = this.cleanDomain(domain);
 
     // Check cache first
     const cached = await this.getCachedIntelligence(cleanDomain);
-    if (cached && this.isCacheValid(cached.lastChecked, cached.cacheExpiry)) {
+    if (cached && this.isCacheValid(cached.lastChecked!, cached.cacheExpiry!)) {
       return this.buildResultFromCache(cached);
     }
 
@@ -54,6 +55,18 @@ export class DomainService {
     return result;
   }
 
+  private static async performWHOISLookup(domain: string): Promise<{
+    registrar?: string;
+    createdDate?: Date;
+    expiresDate?: Date;
+    updatedDate?: Date;
+    registrantName?: string;
+    registrantOrg?: string;
+    domainAge?: number;
+  } | undefined> {
+    return undefined;
+  }
+
   /**
    * Perform fresh domain analysis
    */
@@ -61,13 +74,9 @@ export class DomainService {
     const indicators: string[] = [];
     let riskScore = 0;
 
-    // Perform DNS lookup (simplified - in production use dns.promises)
     const dnsData = await this.performDNSLookup(domain);
-
-    // Perform WHOIS lookup (placeholder - requires external service)
     const whoisData = await this.performWHOISLookup(domain);
 
-    // Calculate domain age risk
     if (whoisData?.domainAge !== undefined) {
       if (whoisData.domainAge < 30) {
         indicators.push('Domain is less than 30 days old');
@@ -78,19 +87,16 @@ export class DomainService {
       }
     }
 
-    // Check for privacy protection
     if (whoisData?.registrantName?.toLowerCase().includes('privacy')) {
       indicators.push('WHOIS privacy protection enabled');
       riskScore += 10;
     }
 
-    // Check DNS records
     if (dnsData.mxRecords.length === 0) {
       indicators.push('No MX records found (suspicious for legitimate domains)');
       riskScore += 10;
     }
 
-    // Check if domain is in our threat intelligence database
     const reputation = await this.checkReputation(domain);
     if (reputation.isKnownPhishing) {
       indicators.push('Domain flagged as known phishing site');
@@ -101,7 +107,6 @@ export class DomainService {
       riskScore += 50;
     }
 
-    // Cap risk score
     riskScore = Math.min(riskScore, 100);
 
     return {
@@ -114,146 +119,103 @@ export class DomainService {
     };
   }
 
-  /**
-   * Perform DNS lookup
-   */
-  private static async performDNSLookup(domain: string): Promise<{
-    ipAddresses: string[];
-    mxRecords: string[];
-    nsRecords: string[];
-    txtRecords: string[];
-  }> {
-    // In production, use Node's dns.promises module
-    // For now, return placeholder data
-    // Example: const dns = require('dns').promises;
-    // const addresses = await dns.resolve4(domain);
+  private static async performDNSLookup(domain: string) {
+    const dns = await import('dns');
+    const dnsPromises = dns.promises;
 
-    return {
-      ipAddresses: [],
-      mxRecords: [],
-      nsRecords: [],
-      txtRecords: [],
+    const result = {
+      ipAddresses: [] as string[],
+      mxRecords: [] as string[],
+      nsRecords: [] as string[],
+      txtRecords: [] as string[],
     };
+
+    const [ipResult, mxResult, nsResult, txtResult] = await Promise.allSettled([
+      dnsPromises.resolve4(domain),
+      dnsPromises.resolveMx(domain),
+      dnsPromises.resolveNs(domain),
+      dnsPromises.resolveTxt(domain),
+    ]);
+
+    if (ipResult.status === 'fulfilled') result.ipAddresses = ipResult.value;
+    if (mxResult.status === 'fulfilled') result.mxRecords = mxResult.value.map(mx => `${mx.priority} ${mx.exchange}`);
+    if (nsResult.status === 'fulfilled') result.nsRecords = nsResult.value;
+    if (txtResult.status === 'fulfilled') result.txtRecords = txtResult.value.map(records => records.join(''));
+
+    return result;
   }
 
-  /**
-   * Perform WHOIS lookup
-   */
-  private static async performWHOISLookup(domain: string): Promise<{
-    registrar?: string;
-    createdDate?: Date;
-    expiresDate?: Date;
-    updatedDate?: Date;
-    registrantName?: string;
-    registrantOrg?: string;
-    domainAge?: number;
-  } | undefined> {
-    // In production, use a WHOIS API service like:
-    // - whoisxmlapi.com
-    // - whois.arin.net
-    // - whoisfreaks.com
-
-    // For now, return placeholder
-    return undefined;
+  private static async fetchCertificate(domain: string): Promise<{
+    issuer: string;
+    subject: string;
+    validFrom: Date;
+    validUntil: Date;
+    serialNumber: string;
+    fingerprint: string;
+    algorithm: string;
+    keySize?: number;
+  } | null> {
+    return null; // Placeholder
   }
 
-  /**
-   * Check domain reputation
-   */
-  private static async checkReputation(domain: string): Promise<{
-    isKnownPhishing: boolean;
-    isKnownMalware: boolean;
-    reportCount: number;
-  }> {
-    // Check if domain is in blocked domains
-    const blockedDomain = await prisma.blockedDomain.findUnique({
-      where: { domain },
+  private static async checkReputation(domain: string) {
+    const blocked = await db.query.blockedDomains.findFirst({
+      where: eq(blockedDomains.domain, domain),
     });
 
-    if (blockedDomain) {
-      return {
-        isKnownPhishing: true,
-        isKnownMalware: false,
-        reportCount: 1,
-      };
+    if (blocked) {
+      return { isKnownPhishing: true, isKnownMalware: false, reportCount: 1 };
     }
 
-    // Check threat intelligence database
-    const threatIntel = await prisma.threatIntelligence.findUnique({
-      where: { domain },
+    const intel = await db.query.threatIntelligence.findFirst({
+      where: eq(threatIntelligence.domain, domain),
     });
 
-    if (threatIntel && threatIntel.reputation < 30) {
-      return {
-        isKnownPhishing: true,
-        isKnownMalware: false,
-        reportCount: 1,
-      };
+    if (intel && intel.reputation < 30) {
+      return { isKnownPhishing: true, isKnownMalware: false, reportCount: 1 };
     }
 
-    return {
-      isKnownPhishing: false,
-      isKnownMalware: false,
-      reportCount: 0,
-    };
+    return { isKnownPhishing: false, isKnownMalware: false, reportCount: 0 };
   }
 
-  /**
-   * Get cached domain intelligence
-   */
   private static async getCachedIntelligence(domain: string) {
     try {
-      return await prisma.domainIntelligence.findUnique({
-        where: { domain },
+      return await db.query.domainIntelligence.findFirst({
+        where: eq(domainIntelligence.domain, domain),
       });
     } catch {
       return null;
     }
   }
 
-  /**
-   * Check if cache is still valid
-   */
   private static isCacheValid(lastChecked: Date, cacheExpiry: Date): boolean {
-    const now = new Date();
-    return now < cacheExpiry;
+    return new Date() < cacheExpiry;
   }
 
-  /**
-   * Build result from cached data
-   */
   private static buildResultFromCache(cached: any): DomainAnalysisResult {
     const indicators: string[] = [];
-    let riskScore = cached.riskScore;
-
-    if (cached.isKnownPhishing) {
-      indicators.push('Domain flagged as known phishing site');
-    }
-    if (cached.isKnownMalware) {
-      indicators.push('Domain flagged as malware distributor');
-    }
-    if (cached.domainAge !== null && cached.domainAge < 30) {
-      indicators.push('Domain is less than 30 days old');
-    }
+    if (cached.isKnownPhishing) indicators.push('Domain flagged as known phishing site');
+    if (cached.isKnownMalware) indicators.push('Domain flagged as malware distributor');
+    if (cached.domainAge !== null && cached.domainAge < 30) indicators.push('Domain is less than 30 days old');
 
     return {
       domain: cached.domain,
-      riskScore,
+      riskScore: cached.riskScore,
       indicators,
       whoisData: {
-        registrar: cached.registrar || undefined,
-        createdDate: cached.createdDate || undefined,
-        expiresDate: cached.expiresDate || undefined,
-        updatedDate: cached.updatedDate || undefined,
-        registrantName: cached.registrantName || undefined,
-        registrantOrg: cached.registrantOrg || undefined,
-        domainAge: cached.domainAge || undefined,
+        registrar: cached.registrar,
+        createdDate: cached.createdDate,
+        expiresDate: cached.expiresDate,
+        updatedDate: cached.updatedDate,
+        registrantName: cached.registrantName,
+        registrantOrg: cached.registrantOrg,
+        domainAge: cached.domainAge,
       },
       dnsData: {
-        ipAddresses: cached.ipAddresses,
-        mxRecords: cached.mxRecords,
-        nsRecords: cached.nsRecords,
-        txtRecords: cached.txtRecords,
+        ipAddresses: cached.ipAddresses || [],
+        mxRecords: cached.mxRecords || [],
+        nsRecords: cached.nsRecords || [],
+        txtRecords: cached.txtRecords || [],
       },
       reputation: {
         isKnownPhishing: cached.isKnownPhishing,
@@ -263,21 +225,33 @@ export class DomainService {
     };
   }
 
-  /**
-   * Cache domain intelligence
-   */
-  private static async cacheIntelligence(
-    domain: string,
-    result: DomainAnalysisResult
-  ): Promise<void> {
+  private static async cacheIntelligence(domain: string, result: DomainAnalysisResult) {
     const now = new Date();
-    const cacheExpiry = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hours
+    const expiry = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
     try {
-      await prisma.domainIntelligence.upsert({
-        where: { domain },
-        create: {
-          domain,
+      await db.insert(domainIntelligence).values({
+        domain,
+        registrar: result.whoisData?.registrar,
+        createdDate: result.whoisData?.createdDate,
+        expiresDate: result.whoisData?.expiresDate,
+        updatedDate: result.whoisData?.updatedDate,
+        registrantName: result.whoisData?.registrantName,
+        registrantOrg: result.whoisData?.registrantOrg,
+        ipAddresses: result.dnsData?.ipAddresses || [],
+        mxRecords: result.dnsData?.mxRecords || [],
+        nsRecords: result.dnsData?.nsRecords || [],
+        txtRecords: result.dnsData?.txtRecords || [],
+        riskScore: result.riskScore,
+        isKnownPhishing: result.reputation.isKnownPhishing,
+        isKnownMalware: result.reputation.isKnownMalware,
+        reportCount: result.reputation.reportCount,
+        domainAge: result.whoisData?.domainAge,
+        lastChecked: now,
+        cacheExpiry: expiry,
+      }).onConflictDoUpdate({
+        target: domainIntelligence.domain,
+        set: {
           registrar: result.whoisData?.registrar,
           createdDate: result.whoisData?.createdDate,
           expiresDate: result.whoisData?.expiresDate,
@@ -294,26 +268,7 @@ export class DomainService {
           reportCount: result.reputation.reportCount,
           domainAge: result.whoisData?.domainAge,
           lastChecked: now,
-          cacheExpiry,
-        },
-        update: {
-          registrar: result.whoisData?.registrar,
-          createdDate: result.whoisData?.createdDate,
-          expiresDate: result.whoisData?.expiresDate,
-          updatedDate: result.whoisData?.updatedDate,
-          registrantName: result.whoisData?.registrantName,
-          registrantOrg: result.whoisData?.registrantOrg,
-          ipAddresses: result.dnsData?.ipAddresses || [],
-          mxRecords: result.dnsData?.mxRecords || [],
-          nsRecords: result.dnsData?.nsRecords || [],
-          txtRecords: result.dnsData?.txtRecords || [],
-          riskScore: result.riskScore,
-          isKnownPhishing: result.reputation.isKnownPhishing,
-          isKnownMalware: result.reputation.isKnownMalware,
-          reportCount: result.reputation.reportCount,
-          domainAge: result.whoisData?.domainAge,
-          lastChecked: now,
-          cacheExpiry,
+          cacheExpiry: expiry,
         },
       });
     } catch (error) {
@@ -321,80 +276,52 @@ export class DomainService {
     }
   }
 
-  /**
-   * Clean domain string
-   */
   private static cleanDomain(input: string): string {
     try {
       const url = new URL(input.startsWith('http') ? input : `http://${input}`);
       return url.hostname;
     } catch {
-      // If URL parsing fails, try to extract domain from string
       return input.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].split('?')[0];
     }
   }
 
-  /**
-   * Check if domain is trusted
-   */
   static async isTrustedDomain(domain: string): Promise<boolean> {
     const cleanDomain = this.cleanDomain(domain);
-
-    const trusted = await prisma.trustedDomain.findUnique({
-      where: { domain: cleanDomain },
+    const trusted = await db.query.trustedDomains.findFirst({
+      where: eq(trustedDomains.domain, cleanDomain),
     });
-
     return !!trusted;
   }
 
-  /**
-   * Check if domain is blocked
-   */
   static async isBlockedDomain(domain: string): Promise<boolean> {
     const cleanDomain = this.cleanDomain(domain);
-
-    const blocked = await prisma.blockedDomain.findUnique({
-      where: { domain: cleanDomain },
+    const blocked = await db.query.blockedDomains.findFirst({
+      where: eq(blockedDomains.domain, cleanDomain),
     });
-
     return !!blocked;
   }
 
-  /**
-   * Add domain to blocklist
-   */
-  static async blockDomain(
-    domain: string,
-    reason: string,
-    addedBy?: string
-  ): Promise<void> {
+  static async blockDomain(domain: string, reason: string, addedBy?: string) {
     const cleanDomain = this.cleanDomain(domain);
-
-    await prisma.blockedDomain.create({
-      data: {
-        domain: cleanDomain,
-        reason,
-        addedBy,
-      },
+    await db.insert(blockedDomains).values({
+      domain: cleanDomain,
+      reason,
+      addedBy,
+    }).onConflictDoUpdate({
+      target: blockedDomains.domain,
+      set: { reason, addedBy },
     });
   }
 
-  /**
-   * Add domain to trusted list
-   */
-  static async trustDomain(
-    domain: string,
-    reason?: string,
-    addedBy?: string
-  ): Promise<void> {
+  static async trustDomain(domain: string, reason?: string, addedBy?: string) {
     const cleanDomain = this.cleanDomain(domain);
-
-    await prisma.trustedDomain.create({
-      data: {
-        domain: cleanDomain,
-        reason,
-        addedBy,
-      },
+    await db.insert(trustedDomains).values({
+      domain: cleanDomain,
+      reason,
+      addedBy,
+    }).onConflictDoUpdate({
+      target: trustedDomains.domain,
+      set: { reason, addedBy },
     });
   }
 }

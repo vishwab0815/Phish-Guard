@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/db';
+import { modelConfigs, scanResults } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 
 async function analyzeMessage(message: string, context: any) {
   const socialEngineeringPatterns = [
@@ -78,9 +80,9 @@ export async function POST(request: NextRequest) {
   try {
     const { message, context, user_id } = await request.json()
 
-    const modelConfig = await prisma.modelConfig.findUnique({
-      where: { modelId: 'message_classifier_v1' }
-    })
+    const modelConfig = await db.query.modelConfigs.findFirst({
+      where: eq(modelConfigs.modelId, 'message_classifier_v1'),
+    });
 
     if (!modelConfig || modelConfig.state !== 'ACTIVE') {
       return NextResponse.json(
@@ -91,20 +93,18 @@ export async function POST(request: NextRequest) {
 
     const analysis = await analyzeMessage(message, context)
 
-    const scanResult = await prisma.scanResult.create({
-      data: {
-        userId: user_id,
-        type: 'MESSAGE',
-        target: message.substring(0, 50) + '...',
-        confidence: analysis.confidence,
-        threatLevel: analysis.threat_level as any,
-        riskScore: analysis.risk_score,
-        indicators: analysis.indicators,
-        recommendations: analysis.recommendations,
-        modelVersion: modelConfig.version,
-        metadata: analysis.message_analysis,
-      },
-    })
+    const [scanResult] = await db.insert(scanResults).values({
+      userId: user_id,
+      type: 'MESSAGE',
+      target: message.substring(0, 50) + '...',
+      confidence: analysis.confidence,
+      threatLevel: analysis.threat_level as any,
+      riskScore: analysis.risk_score,
+      indicators: analysis.indicators,
+      recommendations: analysis.recommendations,
+      modelVersion: modelConfig.version,
+      metadata: analysis.message_analysis,
+    }).returning();
 
     return NextResponse.json({
       success: true,
@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
           recommendations: scanResult.recommendations,
         },
         user_id: scanResult.userId,
-        timestamp: scanResult.timestamp.toISOString(),
+        timestamp: scanResult.timestamp?.toISOString() || new Date().toISOString(),
         model_version: scanResult.modelVersion,
       },
     })

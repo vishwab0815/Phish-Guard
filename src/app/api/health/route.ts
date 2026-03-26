@@ -1,22 +1,21 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/db'
+import { modelConfigs } from '@/db/schema'
+import { eq } from 'drizzle-orm'
 
 export async function GET() {
   try {
-    // Check database connection
-    await prisma.$connect()
-
     // Count active models
-    const models = await prisma.modelConfig.findMany({
-      where: { state: 'ACTIVE' }
+    const activeModels = await db.query.modelConfigs.findMany({
+      where: eq(modelConfigs.state, 'ACTIVE')
     })
 
     return NextResponse.json({
       success: true,
       status: 'healthy',
       timestamp: new Date().toISOString(),
-      models: models.map(m => m.modelId),
-      models_available: models.length,
+      models: activeModels.map(m => m.modelId),
+      models_available: activeModels.length,
       database: 'connected'
     })
   } catch (error) {

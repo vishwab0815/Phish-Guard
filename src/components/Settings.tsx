@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -9,19 +9,76 @@ import { Slider } from "./ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
-import { Shield, Save } from "lucide-react";
+import { Shield, Save, Loader2 } from "lucide-react";
+import { SystemStatus } from "./SystemStatus";
+import { toast } from "sonner";
 
-export function Settings() {
+interface SettingsProps {
+  backendService: any;
+}
+
+export function Settings({ backendService }: SettingsProps) {
   const [notifications, setNotifications] = useState(true);
   const [realTimeScanning, setRealTimeScanning] = useState(true);
   const [autoQuarantine, setAutoQuarantine] = useState(false);
   const [sensitivityLevel, setSensitivityLevel] = useState([75]);
-  const [apiEndpoint, setApiEndpoint] = useState("https://api.phishing-detector.com");
+  const [apiEndpoint, setApiEndpoint] = useState("");
   const [threatDbUpdates, setThreatDbUpdates] = useState(true);
+  const [defaultAction, setDefaultAction] = useState("warn");
+  const [securityLevel, setSecurityLevel] = useState("medium");
+  const [dataRetention, setDataRetention] = useState("90");
+  const [saving, setSaving] = useState(false);
 
-  const handleSaveSettings = () => {
-    // Mock save functionality
-    console.log("Settings saved");
+  // Load settings on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const response = await backendService.getSettings();
+        if (response.success && response.settings) {
+          const s = response.settings;
+          setRealTimeScanning(s.realTimeScanning ?? true);
+          setAutoQuarantine(s.autoQuarantine ?? false);
+          setSensitivityLevel([s.detectionSensitivity ?? 75]);
+          setDefaultAction(s.defaultAction ?? 'warn');
+          setNotifications(s.emailAlerts ?? true);
+          setThreatDbUpdates(s.autoUpdate ?? true);
+          setApiEndpoint(s.apiEndpoint ?? '');
+          setSecurityLevel(s.securityLevel ?? 'medium');
+          setDataRetention(String(s.dataRetentionDays ?? 90));
+        }
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+      }
+    };
+    loadSettings();
+  }, [backendService]);
+
+  const handleSaveSettings = async () => {
+    setSaving(true);
+    try {
+      const result = await backendService.saveSettings({
+        realTimeScanning,
+        autoQuarantine,
+        detectionSensitivity: sensitivityLevel[0],
+        defaultAction,
+        emailAlerts: notifications,
+        desktopAlerts: notifications,
+        dailySummary: false,
+        autoUpdate: threatDbUpdates,
+        apiEndpoint,
+        securityLevel,
+        dataRetentionDays: parseInt(dataRetention),
+      });
+      if (result.success) {
+        toast.success('Settings saved successfully');
+      } else {
+        toast.error('Failed to save settings');
+      }
+    } catch {
+      toast.error('Failed to save settings');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -34,13 +91,18 @@ export function Settings() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="detection" className="w-full">
-            <TabsList className="grid w-full grid-cols-4">
+          <Tabs defaultValue="system" className="w-full">
+            <TabsList className="grid w-full grid-cols-5">
+              <TabsTrigger value="system">System Status</TabsTrigger>
               <TabsTrigger value="detection">Detection</TabsTrigger>
               <TabsTrigger value="notifications">Notifications</TabsTrigger>
               <TabsTrigger value="api">API</TabsTrigger>
               <TabsTrigger value="security">Security</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="system" className="space-y-6 mt-6">
+              <SystemStatus />
+            </TabsContent>
 
             <TabsContent value="detection" className="space-y-6 mt-6">
               <div className="space-y-4">
@@ -311,9 +373,9 @@ export function Settings() {
           </Tabs>
 
           <div className="flex justify-end pt-6">
-            <Button onClick={handleSaveSettings} className="flex items-center gap-2">
-              <Save className="w-4 h-4" />
-              Save Settings
+            <Button onClick={handleSaveSettings} disabled={saving} className="flex items-center gap-2">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {saving ? 'Saving...' : 'Save Settings'}
             </Button>
           </div>
         </CardContent>

@@ -259,7 +259,7 @@ export default function Home() {
             value="settings"
             className="animate-in fade-in-50 duration-500"
           >
-            <Settings />
+            <Settings backendService={BackendService} />
           </TabsContent>
         </Tabs>
       </div>
@@ -275,17 +275,17 @@ export default function Home() {
             <div className="flex items-center gap-4">
               <span className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                Last DB Update: 2 hours ago
+                Last Update: {systemStats.lastUpdate ? new Date(systemStats.lastUpdate).toLocaleTimeString() : 'N/A'}
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                Threats Blocked Today: 23
+                Active Threats: {systemStats.activeThreats}
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></div>
-                AI Assistant Online
+                <div className={`w-2 h-2 ${systemStats.online ? 'bg-purple-500' : 'bg-gray-400'} rounded-full animate-pulse`}></div>
+                AI Assistant {systemStats.online ? 'Online' : 'Offline'}
               </span>
             </div>
           </div>
