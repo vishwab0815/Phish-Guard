@@ -43,12 +43,16 @@ export function ScanHistory({ backendService }: ScanHistoryProps) {
             id: scan.id,
             type: scan.type,
             content: scan.target,
-            threat_level: scan.result.threat_level.toLowerCase(),
+            threat_level: String(scan.result.threat_level || 'safe').toLowerCase(),
             confidence: scan.result.confidence,
             timestamp: new Date(scan.timestamp).toLocaleString(),
             indicators: scan.result.indicators || [],
-            status: scan.result.threat_level === 'HIGH' || scan.result.threat_level === 'CRITICAL' ? 'blocked' :
-                    scan.result.threat_level === 'MEDIUM' ? 'quarantined' : 'completed'
+            status: (() => {
+              const threatLevel = String(scan.result.threat_level || 'safe').toLowerCase();
+              if (threatLevel === 'high' || threatLevel === 'critical') return 'blocked';
+              if (threatLevel === 'medium') return 'quarantined';
+              return 'completed';
+            })()
           }));
           setHistoryData(transformedHistory);
         }

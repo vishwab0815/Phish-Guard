@@ -152,10 +152,10 @@ export class URLAnalyzer {
     // Check TLD risk
     const tldRisk = this.checkTLDRisk(parsedUrl.hostname);
     if (tldRisk === 'high') {
-      indicators.push('High-risk top-level domain');
+      indicators.push('high-risk top-level domain');
       riskScore += 20;
     } else if (tldRisk === 'medium') {
-      indicators.push('Medium-risk top-level domain');
+      indicators.push('medium-risk top-level domain');
       riskScore += 10;
     }
 
@@ -213,12 +213,14 @@ export class URLAnalyzer {
    * Check if hostname is an IP address
    */
   private static checkIPAddress(hostname: string): boolean {
+    const normalizedHostname = hostname.replace(/^\[(.*)\]$/, '$1');
+
     // IPv4 pattern
     const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
     // IPv6 pattern (simplified)
     const ipv6Pattern = /^[0-9a-fA-F:]+$/;
 
-    return ipv4Pattern.test(hostname) || ipv6Pattern.test(hostname);
+    return ipv4Pattern.test(normalizedHostname) || ipv6Pattern.test(normalizedHostname);
   }
 
   /**
@@ -361,7 +363,31 @@ export class URLAnalyzer {
   static extractDomain(url: string): string | null {
     try {
       const parsedUrl = new URL(url);
-      return parsedUrl.hostname.replace(/^www\./, '');
+      const hostname = parsedUrl.hostname.replace(/^www\./, '');
+
+      if (this.checkIPAddress(hostname) || hostname === 'localhost') {
+        return hostname.replace(/^\[(.*)\]$/, '$1');
+      }
+
+      const parts = hostname.split('.');
+      if (parts.length <= 2) {
+        return hostname;
+      }
+
+      const multiPartTlds = [
+        'co.uk', 'org.uk', 'gov.uk', 'ac.uk',
+        'co.jp', 'co.in', 'com.au', 'net.au', 'org.au',
+        'co.nz', 'com.br', 'com.cn', 'com.tw', 'co.kr', 'co.za',
+      ];
+
+      const lastTwo = parts.slice(-2).join('.');
+      const lastThree = parts.slice(-3).join('.');
+
+      if (multiPartTlds.some(tld => hostname.endsWith(`.${tld}`)) && parts.length >= 3) {
+        return lastThree;
+      }
+
+      return lastTwo;
     } catch {
       return null;
     }

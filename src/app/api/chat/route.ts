@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import Groq from 'groq-sdk';
+import { ChatOpenAI } from '@langchain/openai';
+import { AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
 
 /**
  * AI Chat API - Using Groq (100% FREE!)
@@ -40,38 +41,37 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      // Use Groq AI (FREE!)
-      const groq = new Groq({
-        apiKey: process.env.GROQ_API_KEY,
-      });
-
       // Sanitize context: only allow 'user' and 'assistant' roles to prevent prompt injection
       const validRoles = new Set(['user', 'assistant']);
-      const sanitizedContext = (context || [])
+      const sanitizedContext = (Array.isArray(context) ? context : [])
         .filter((msg: any) => validRoles.has(msg.role) && typeof msg.content === 'string')
-        .map((msg: any) => ({ role: msg.role as 'user' | 'assistant', content: msg.content }));
+        .map((msg: any) => msg.role === 'assistant'
+          ? new AIMessage(msg.content)
+          : new HumanMessage(msg.content));
 
-      const messages = [
-        { role: 'system' as const, content: SYSTEM_PROMPT },
-        ...sanitizedContext,
-        { role: 'user' as const, content: message },
-      ];
-
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile', // Latest Llama 3.3 - Free and powerful!
-        messages,
+      const model = new ChatOpenAI({
+        apiKey: process.env.GROQ_API_KEY,
+        model: 'llama-3.3-70b-versatile',
         temperature: 0.7,
-        max_tokens: 1024,
-        top_p: 1,
-      });
+        maxTokens: 1024,
+        configuration: {
+          baseURL: 'https://api.groq.com/openai/v1',
+        },
+      } as any);
 
-      const responseContent = completion.choices[0]?.message?.content || 'No response generated';
+      const completion = await model.invoke([
+        new SystemMessage(SYSTEM_PROMPT),
+        ...sanitizedContext,
+        new HumanMessage(message),
+      ]);
+
+      const responseContent = normalizeMessageContent(completion.content) || 'No response generated';
 
       return NextResponse.json({
         success: true,
         response: responseContent,
-        model: completion.model,
-        usage: completion.usage,
+        model: 'llama-3.3-70b-versatile',
+        usage: completion.response_metadata,
         fallback: false,
       });
     } catch (error) {
@@ -96,6 +96,26 @@ export async function POST(request: NextRequest) {
       error: error instanceof Error ? error.message : 'Unknown error',
     }, { status: 200 });
   }
+}
+
+function normalizeMessageContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        if (part && typeof part.content === 'string') return part.content;
+        return '';
+      })
+      .join('')
+      .trim();
+  }
+
+  return '';
 }
 
 /**

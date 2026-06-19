@@ -6,6 +6,7 @@
 import { db } from '@/db';
 import { certificateInfo } from '@/db/schema';
 import { eq, desc, sql } from 'drizzle-orm';
+import tls from 'tls';
 
 export interface SSLAnalysisResult {
   isValid: boolean;
@@ -105,9 +106,66 @@ export class SSLValidator {
     algorithm: string;
     keySize?: number;
   } | null> {
-    // In production, use Node's tls module. 
-    // This is a placeholder for the integrated detection engine.
-    return null;
+    return new Promise((resolve) => {
+      const socket = tls.connect({
+        host: domain,
+        port: 443,
+        servername: domain,
+        rejectUnauthorized: false,
+      }, () => {
+        try {
+          const certificate = socket.getPeerCertificate(true) as any;
+
+          socket.end();
+
+          if (!certificate || !certificate.valid_from || !certificate.valid_to || !certificate.issuer || !certificate.subject) {
+            resolve(null);
+            return;
+          }
+
+          const formatName = (name: Record<string, any> | undefined) => {
+            if (!name) return '';
+
+            const entries = Object.entries(name)
+              .filter(([, value]) => value !== undefined && value !== null)
+              .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : value}`);
+
+            return entries.join(', ');
+          };
+
+          const validFrom = new Date(certificate.valid_from);
+          const validUntil = new Date(certificate.valid_to);
+
+          if (Number.isNaN(validFrom.getTime()) || Number.isNaN(validUntil.getTime())) {
+            resolve(null);
+            return;
+          }
+
+          resolve({
+            issuer: formatName(certificate.issuer),
+            subject: formatName(certificate.subject),
+            validFrom,
+            validUntil,
+            serialNumber: certificate.serialNumber || 'unknown',
+            fingerprint: certificate.fingerprint256 || certificate.fingerprint || 'unknown',
+            algorithm: certificate.signatureAlgorithm || certificate.sigalg || 'unknown',
+            keySize: certificate.bits || undefined,
+          });
+        } catch {
+          socket.destroy();
+          resolve(null);
+        }
+      });
+
+      socket.setTimeout(5000, () => {
+        socket.destroy();
+        resolve(null);
+      });
+
+      socket.on('error', () => {
+        resolve(null);
+      });
+    });
   }
 
   private static async analyzeTrust(cert: any, domain: string) {

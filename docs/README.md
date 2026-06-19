@@ -1,79 +1,61 @@
-# Cyber-Protect: Beginner's Master Guide 🎓
+# PhishGuard Documentation
 
-Welcome to **Cyber-Protect** (formerly PhishGuard)! This guide is designed to help you understand what this project is, how it works, and how you can get started as a developer—even if you're new to cybersecurity.
+This document is a short guide to the project structure and the main pieces that make PhishGuard work.
 
----
+## Project Overview
 
-## 🛡️ What is Cyber-Protect?
+PhishGuard v2.1.0 is an AI-assisted phishing detection platform. It analyzes suspicious URLs, emails, messages, and files, then combines those results with domain intelligence, SSL checks, IP reputation, and external threat feeds.
 
-Cyber-Protect is an **automated cybersecurity analyst**. 
+The goal is to give users a single place to inspect threats, review past scans, and get security guidance through the built-in AI assistant.
 
-In the real world, attackers send "phishing" links to steal passwords. Usually, a human expert would have to look at a link to see if it's dangerous. Cyber-Protect does this automatically using multiple "layers" of intelligence:
+## Tech Stack
 
-1.  **Static Layer**: Does the link look weird? (e.g., `paypa1.com` instead of `paypal.com`)
-2.  **Domain Layer**: How old is the website? (New sites are more suspicious)
-3.  **Security Layer**: Does it have a valid security certificate (SSL)?
-4.  **Intelligence Layer**: Do global blacklists already know about this threat?
+- Next.js 16 with the App Router
+- React 19 and TypeScript
+- Tailwind CSS and Framer Motion for UI
+- Drizzle ORM with PostgreSQL
+- Groq-powered chat responses with LangChain support
+- Radix UI, Lucide React, and Sonner for interface components
 
----
+## How the App Is Organized
 
-## 🚀 Beginner's Quick Start
+- src/app: Page routes and API endpoints
+- src/components: Dashboard, scan UI, history, settings, and chatbot
+- src/services: Detection logic and external intelligence providers
+- src/db: Schema definitions, seed data, and database setup
 
-If you've never worked on a project like this before, follow these steps exactly:
+## Main Detection Flow
 
-### 1. The Environment (The Context)
-The app needs to store its data somewhere. We use **Supabase** (a cloud database).
-- Create a [Supabase](https://supabase.com) account.
-- Get your **Connection String**.
-- Put it in a file named `.env.local` as `DATABASE_URL`.
+1. A user submits a URL, email, message, or file.
+2. The relevant API route forwards the request to the detection services.
+3. Static analysis and intelligence layers generate indicators and risk scores.
+4. Results are saved to the database and displayed in the dashboard or history views.
+5. The AI chat endpoint can explain results or answer security questions.
 
-### 2. The Setup (The Foundations)
-Run these commands in your terminal:
+## Local Setup
+
 ```bash
-npm install          # Download the code's tools
-npm run db:push      # Tell the database how to store our data
-npm run db:seed      # Put some starting data (like AI models) into the database
-npm run dev          # Start the app!
+npm install
+npm run db:push
+npm run db:seed
+npm run dev
 ```
 
-### 3. Your First Scan
-Open [http://localhost:3000](http://localhost:3000), go to the **Scan Interface**, and type `https://www.google.com`. You'll see the engine working in real-time!
+Set DATABASE_URL in .env.local before running database commands. Optional AI and threat-intelligence keys can also be added there.
 
----
+## Useful Files
 
-## 🏗️ Where is the Code? (Simplified Map)
+- src/app/page.tsx: main application shell
+- src/components/ScanInterface.tsx: scan workflow and result display
+- src/components/Dashboard.tsx: summary metrics and recent activity
+- src/components/AIChatbot.tsx: assistant UI for prompts and commands
+- src/services/detection/masterDetector.ts: orchestration layer for URL scans
 
-If you want to start coding, here is where the important stuff lives:
+## Version
 
-- **The Visuals**: `src/app/page.tsx` (This is the main screen you see).
-- **The Dashboard**: `src/components/Dashboard.tsx` (Controls the stats and charts).
-- **The Brain**: `src/services/detection/masterDetector.ts` (Coordinates all scanning).
-- **The Database**: `src/db/schema.ts` (Defines what a "User" or a "Scan" looks like).
+- Current project version: v2.1.0
 
----
+## Notes
 
-## 🏗️ Architecture (The "Big Picture")
-
-Cyber-Protect follows a **Layered Architecture**:
-- **UI Layer** (Frontend): React components that users interact with.
-- **Service Layer** (Backend): The engines that actually do the scanning.
-- **Data Layer** (Database): Where we store history and settings.
-
-The **MasterDetector** is the most important service—it calls all the others to give a final "Threat Level" (SAFE, WARNING, or DANGER).
-
----
-
-## ❓ FAQ for Beginners
-
-**"What is Drizzle?"**
-It's our "Translator". It lets us talk to the database using JavaScript instead of complex SQL commands.
-
-**"Do I need to pay for anything?"**
-No! This project is designed to work for free using Supabase and Groq AI's free tiers.
-
-**"Where do I ask for help?"**
-Start by reading the code comments! Every major function has a description explaining *why* it exists.
-
----
-
-*Cyber-Protect — Making the web safer, one scan at a time.* 🛡️
+- The project is designed to keep working in local mode if external APIs are unavailable.
+- The UI and backend use the same scan data model so results stay consistent across views.

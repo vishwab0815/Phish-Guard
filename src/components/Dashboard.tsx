@@ -110,7 +110,7 @@ export function Dashboard({ backendService }: DashboardProps) {
             id: scan.id,
             type: scan.type,
             content: scan.target,
-            threat_level: scan.result.threat_level.toLowerCase(),
+            threat_level: String(scan.result.threat_level || 'safe').toLowerCase(),
             timestamp: getRelativeTime(scan.timestamp),
             confidence: scan.result.confidence,
             indicators: scan.result.indicators || [],
@@ -127,7 +127,7 @@ export function Dashboard({ backendService }: DashboardProps) {
           setModels(modelsResponse.models);
           setSystemHealth({
             online: true,
-            modelsActive: modelsResponse.models.filter((m: any) => m.config.state === 'active').length
+            modelsActive: modelsResponse.models.filter((m: any) => String(m.config.state || '').toLowerCase() === 'active').length
           });
         }
 
