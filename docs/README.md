@@ -14,7 +14,7 @@ The goal is to give users a single place to inspect threats, review past scans, 
 - React 19 and TypeScript
 - Tailwind CSS and Framer Motion for UI
 - Drizzle ORM with PostgreSQL
-- Groq-powered chat responses with LangChain support
+- Groq via groq-sdk (model set in src/lib/llm.ts) for the AI assistant and message analysis
 - Radix UI, Lucide React, and Sonner for interface components
 
 ## How the App Is Organized
@@ -46,7 +46,7 @@ Set DATABASE_URL in .env.local before running database commands. Optional AI and
 ## Useful Files
 
 - src/app/page.tsx: main application shell
-- src/components/ScanInterface.tsx: scan workflow and result display
+- src/components/ScanInterface.tsx + src/components/scan/: scan forms, progress and result report
 - src/components/Dashboard.tsx: summary metrics and recent activity
 - src/components/AIChatbot.tsx: assistant UI for prompts and commands
 - src/services/detection/masterDetector.ts: orchestration layer for URL scans
@@ -57,5 +57,5 @@ Set DATABASE_URL in .env.local before running database commands. Optional AI and
 
 ## Notes
 
-- The project is designed to keep working in local mode if external APIs are unavailable.
+- External APIs are optional: without keys, scans use local analysis and say which checks were skipped.
 - The UI and backend use the same scan data model so results stay consistent across views.

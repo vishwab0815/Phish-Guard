@@ -1,42 +1,40 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { desc, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { scanResults } from '@/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { getSessionUserId } from '@/lib/session';
+import { enforceRateLimit, LIMITS } from '@/lib/apiGuard';
+import { serverError, toScanDto } from '../_lib/http';
 
-export async function GET(request: Request) {
+export const runtime = 'nodejs';
+
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 100;
+
+/**
+ * GET /api/scans?limit=N — the current session's scan history (newest first).
+ * Any user_id query parameter is ignored: identity comes only from the session cookie.
+ */
+export async function GET(request: NextRequest) {
   try {
-    const searchParams = new URL(request.url).searchParams;
-    const user_id = searchParams.get('user_id');
+    const userId = await getSessionUserId();
+    const limited = await enforceRateLimit(request, userId, 'read', LIMITS.read);
+    if (limited) return limited;
+
+    const rawLimit = Number.parseInt(new URL(request.url).searchParams.get('limit') ?? '', 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, MAX_LIMIT) : DEFAULT_LIMIT;
 
     const scans = await db.query.scanResults.findMany({
-      where: user_id ? eq(scanResults.userId, user_id) : undefined,
+      where: eq(scanResults.userId, userId),
       orderBy: [desc(scanResults.timestamp)],
-      limit: 100,
+      limit,
     });
 
     return NextResponse.json({
       success: true,
-      scans: scans.map(scan => ({
-        id: scan.id,
-        type: scan.type,
-        target: scan.target,
-        result: {
-          confidence: scan.confidence,
-          threat_level: scan.threatLevel,
-          risk_score: scan.riskScore,
-          indicators: scan.indicators || [],
-          recommendations: scan.recommendations || [],
-        },
-        user_id: scan.userId,
-        timestamp: scan.timestamp?.toISOString(),
-        model_version: scan.modelVersion,
-      })),
+      scans: scans.map(toScanDto),
     });
   } catch (error) {
-    console.error('Error fetching scans:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch scan history' },
-      { status: 500 }
-    );
+    return serverError('GET /api/scans', error, 'Failed to fetch scan history');
   }
 }

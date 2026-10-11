@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, doublePrecision, jsonb, uuid, integer, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, doublePrecision, jsonb, uuid, integer, pgEnum, index } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // Enums
@@ -34,6 +34,11 @@ export const userSettings = pgTable('user_settings', {
   
   // API Configuration
   apiEndpoint: text('apiEndpoint'),
+  /**
+   * @deprecated Never written or returned by the API any more (it was stored in
+   * plaintext). Kept only so `drizzle-kit push` doesn't drop the column and its
+   * data; clear existing values and remove in a planned migration.
+   */
   apiKey: text('apiKey'),
   rateLimit: integer('rateLimit').default(100),
   
@@ -67,7 +72,9 @@ export const scanResults = pgTable('scan_results', {
   
   createdAt: timestamp('createdAt').defaultNow(),
   updatedAt: timestamp('updatedAt').defaultNow(),
-});
+}, (t) => [
+  index('scan_results_user_timestamp_idx').on(t.userId, t.timestamp),
+]);
 
 export const modelConfigs = pgTable('model_configs', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -166,7 +173,9 @@ export const certificateInfo = pgTable('certificate_info', {
   
   lastChecked: timestamp('lastChecked').defaultNow(),
   checkCount: integer('checkCount').default(1),
-});
+}, (t) => [
+  index('certificate_info_domain_idx').on(t.domain),
+]);
 
 export const ipIntelligence = pgTable('ip_intelligence', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -223,7 +232,9 @@ export const scanJobs = pgTable('scan_jobs', {
   retryCount: integer('retryCount').default(0),
   maxRetries: integer('maxRetries').default(3),
   externalJobId: text('externalJobId'),
-});
+}, (t) => [
+  index('scan_jobs_user_idx').on(t.userId),
+]);
 
 // Relationships
 export const usersRelations = relations(users, ({ one, many }) => ({
@@ -332,7 +343,9 @@ export const malwareThreatFeed = pgTable('malware_threat_feeds', {
   isActive: boolean('isActive').default(true),
   isFalsePositive: boolean('isFalsePositive').default(false),
   metadata: jsonb('metadata'),
-});
+}, (t) => [
+  index('malware_threat_feeds_indicator_value_idx').on(t.indicatorValue),
+]);
 
 export const malwareSignature = pgTable('malware_signatures', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -358,7 +371,7 @@ export const externalScanResultsRelations = relations(externalScanResults, ({ on
   }),
 }));
 
-export const fileAnalysisRelations = relations(fileAnalysis, ({ one, many }) => ({
+export const fileAnalysisRelations = relations(fileAnalysis, ({ one }) => ({
   user: one(users, {
     fields: [fileAnalysis.userId],
     references: [users.id],

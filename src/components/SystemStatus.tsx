@@ -1,170 +1,257 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { CheckCircle, XCircle, AlertCircle, RefreshCw, Database, Shield, Brain, Globe } from "lucide-react";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { AlertCircle, Brain, CheckCircle, Database, Globe, Lock, RefreshCw, Shield, XCircle } from "lucide-react";
+import {
+  ApiError,
+  BackendService,
+  errorMessage,
+  isAbortError,
+  type HealthResponse,
+  type IntegrationServiceStatus,
+  type IntegrationTestResponse,
+} from "@/utils/BackendService";
 
-interface ServiceStatus {
-  configured: boolean;
-  working: boolean;
-  message: string;
+const SERVICE_INFO: Record<string, { name: string; envVar: string; kind: "shield" | "ai" | "db" }> = {
+  virusTotal: { name: "VirusTotal", envVar: "VIRUSTOTAL_API_KEY", kind: "shield" },
+  googleSafeBrowsing: { name: "Google Safe Browsing", envVar: "GOOGLE_SAFE_BROWSING_API_KEY", kind: "shield" },
+  groq: { name: "Groq AI", envVar: "GROQ_API_KEY", kind: "ai" },
+  openAI: { name: "Groq AI", envVar: "GROQ_API_KEY", kind: "ai" },
+  database: { name: "PostgreSQL database", envVar: "DATABASE_URL", kind: "db" },
+};
+
+function serviceIcon(key: string) {
+  const kind = SERVICE_INFO[key]?.kind;
+  if (kind === "shield") return <Shield className="w-8 h-8" aria-hidden="true" />;
+  if (kind === "ai") return <Brain className="w-8 h-8" aria-hidden="true" />;
+  if (kind === "db") return <Database className="w-8 h-8" aria-hidden="true" />;
+  return <Globe className="w-8 h-8" aria-hidden="true" />;
 }
 
-interface APITestResults {
-  summary: {
-    working: number;
-    total: number;
-    status: string;
-  };
-  services: {
-    virusTotal: ServiceStatus & { testUrl: string };
-    googleSafeBrowsing: ServiceStatus & { testUrl: string };
-    openAI: ServiceStatus & { model: string };
-    database: ServiceStatus;
-  };
-  timestamp: string;
+function StatusBadge({ service }: { service: IntegrationServiceStatus }) {
+  if (!service.configured) {
+    return (
+      <Badge variant="outline" className="border-yellow-500/60 text-yellow-700 dark:text-yellow-400">
+        <AlertCircle className="w-3 h-3" aria-hidden="true" />
+        Not configured
+      </Badge>
+    );
+  }
+  return service.working ? (
+    <Badge variant="outline" className="border-green-600/60 text-green-700 dark:text-green-400">
+      <CheckCircle className="w-3 h-3" aria-hidden="true" />
+      Operational
+    </Badge>
+  ) : (
+    <Badge variant="destructive">
+      <XCircle className="w-3 h-3" aria-hidden="true" />
+      Failing
+    </Badge>
+  );
 }
 
 export function SystemStatus() {
-  const [status, setStatus] = useState<APITestResults | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
 
-  const testAPIs = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch('/api/test-apis');
-      const data = await response.json();
+  const [adminToken, setAdminToken] = useState("");
+  const [integrations, setIntegrations] = useState<IntegrationTestResponse | null>(null);
+  const [integrationError, setIntegrationError] = useState<string | null>(null);
+  const [integrationLoading, setIntegrationLoading] = useState(false);
 
-      if (data.success) {
-        setStatus(data);
-      } else {
-        setError('Failed to test APIs');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
+  // State is only set inside promise callbacks (never synchronously in an effect).
+  const loadHealth = useCallback(
+    (signal?: AbortSignal) =>
+      BackendService.getHealth(signal).then(
+        (res) => {
+          if (signal?.aborted) return;
+          setHealth(res);
+          setHealthError(null);
+          setHealthLoading(false);
+        },
+        (error) => {
+          if (isAbortError(error) || signal?.aborted) return;
+          setHealth(null);
+          setHealthError(errorMessage(error, "Couldn't reach the scanner."));
+          setHealthLoading(false);
+        }
+      ),
+    []
+  );
+
+  const refreshHealth = () => {
+    setHealthLoading(true);
+    loadHealth();
   };
 
   useEffect(() => {
-    testAPIs();
-  }, []);
+    const controller = new AbortController();
+    loadHealth(controller.signal);
+    return () => controller.abort();
+  }, [loadHealth]);
 
-  const getStatusIcon = (service: ServiceStatus) => {
-    if (!service.configured) {
-      return <AlertCircle className="w-5 h-5 text-yellow-500" />;
-    }
-    return service.working ?
-      <CheckCircle className="w-5 h-5 text-green-500" /> :
-      <XCircle className="w-5 h-5 text-red-500" />;
-  };
-
-  const getStatusBadge = (service: ServiceStatus) => {
-    if (!service.configured) {
-      return <Badge variant="outline" className="bg-yellow-50">Not Configured</Badge>;
-    }
-    return service.working ?
-      <Badge variant="outline" className="bg-green-50">Operational</Badge> :
-      <Badge variant="destructive">Offline</Badge>;
-  };
-
-  const getServiceIcon = (serviceName: string) => {
-    switch (serviceName) {
-      case 'virusTotal':
-      case 'googleSafeBrowsing':
-        return <Shield className="w-8 h-8" />;
-      case 'openAI':
-        return <Brain className="w-8 h-8" />;
-      case 'database':
-        return <Database className="w-8 h-8" />;
-      default:
-        return <Globe className="w-8 h-8" />;
+  const runIntegrationCheck = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!adminToken.trim()) return;
+    setIntegrationLoading(true);
+    setIntegrationError(null);
+    try {
+      const res = await BackendService.testIntegrations(adminToken.trim());
+      setIntegrations(res);
+    } catch (error) {
+      setIntegrations(null);
+      if (error instanceof ApiError && error.status === 404) {
+        setIntegrationError("Admin checks are disabled on this server (ADMIN_API_TOKEN is not set).");
+      } else if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        setIntegrationError("That admin token wasn't accepted.");
+      } else {
+        setIntegrationError(errorMessage(error, "The integration check failed."));
+      }
+    } finally {
+      setIntegrationLoading(false);
     }
   };
 
-  const getServiceName = (key: string): string => {
-    const names: Record<string, string> = {
-      virusTotal: 'VirusTotal API',
-      googleSafeBrowsing: 'Google Safe Browsing',
-      openAI: 'OpenAI GPT-4',
-      database: 'Neon PostgreSQL'
-    };
-    return names[key] || key;
-  };
+  const services = integrations?.services ? Object.entries(integrations.services) : [];
+  const unconfigured = services.filter(([, s]) => !s.configured);
 
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <CardTitle>System Status</CardTitle>
-              <CardDescription>
-                Monitor external service integrations and API health
-              </CardDescription>
+              <CardTitle>Scanner health</CardTitle>
+              <CardDescription>Live result of the server health check</CardDescription>
             </div>
-            <Button
-              onClick={testAPIs}
-              disabled={loading}
-              variant="outline"
-              size="sm"
-            >
-              <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            <Button onClick={refreshHealth} disabled={healthLoading} variant="outline" size="sm">
+              <RefreshCw className={`w-4 h-4 mr-2 ${healthLoading ? "animate-spin" : ""}`} aria-hidden="true" />
               Refresh
             </Button>
           </div>
         </CardHeader>
         <CardContent>
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg mb-4">
-              <strong>Error:</strong> {error}
+          {healthError ? (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200" role="alert">
+              <strong>Scanner offline:</strong> {healthError}
+            </div>
+          ) : health ? (
+            <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="rounded-lg bg-muted/50 p-4">
+                <dt className="text-xs text-muted-foreground">Status</dt>
+                <dd className="text-lg font-semibold flex items-center gap-2">
+                  {health.status === "degraded" ? (
+                    <>
+                      <AlertCircle className="w-4 h-4 text-yellow-600" aria-hidden="true" />
+                      Degraded
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle className="w-4 h-4 text-green-600" aria-hidden="true" />
+                      Online
+                    </>
+                  )}
+                </dd>
+              </div>
+              <div className="rounded-lg bg-muted/50 p-4">
+                <dt className="text-xs text-muted-foreground">Detection engines active</dt>
+                <dd className="text-lg font-semibold">
+                  {typeof health.models_available === "number"
+                    ? health.models_available
+                    : Array.isArray(health.models)
+                      ? health.models.length
+                      : "—"}
+                </dd>
+              </div>
+              <div className="rounded-lg bg-muted/50 p-4">
+                <dt className="text-xs text-muted-foreground">Database</dt>
+                <dd className="text-lg font-semibold">
+                  {health.database === "up" ? "Connected" : health.database === "down" ? "Down" : "—"}
+                </dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="text-sm text-muted-foreground" role="status">Checking…</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Lock className="w-4 h-4" aria-hidden="true" />
+            External integrations (admin)
+          </CardTitle>
+          <CardDescription>
+            Checking VirusTotal, Google Safe Browsing and Groq calls the real services and uses quota, so it needs the
+            server&apos;s admin token. The token is only sent with this request and isn&apos;t stored.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <form onSubmit={runIntegrationCheck} className="flex flex-col sm:flex-row gap-2 sm:items-end">
+            <div className="flex-1 space-y-2">
+              <Label htmlFor="admin-token">Admin token</Label>
+              <Input
+                id="admin-token"
+                type="password"
+                autoComplete="off"
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+              />
+            </div>
+            <Button type="submit" variant="outline" disabled={!adminToken.trim() || integrationLoading}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${integrationLoading ? "animate-spin" : ""}`} aria-hidden="true" />
+              Run check
+            </Button>
+          </form>
+
+          {integrationError && (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200" role="alert">
+              {integrationError}
             </div>
           )}
 
-          {status && (
+          {integrations && (
             <div className="space-y-6">
-              {/* Overall Status */}
-              <div className="bg-muted/50 rounded-lg p-4">
-                <div className="flex items-center justify-between">
+              {integrations.summary && (
+                <div className="bg-muted/50 rounded-lg p-4 flex items-center justify-between">
                   <div>
-                    <h3 className="text-lg font-semibold">Overall Status</h3>
-                    <p className="text-sm text-muted-foreground">{status.summary.status}</p>
+                    <h3 className="text-lg font-semibold">Overall</h3>
+                    <p className="text-sm text-muted-foreground">{integrations.summary.status ?? "—"}</p>
                   </div>
                   <div className="text-right">
                     <div className="text-3xl font-bold">
-                      {status.summary.working}/{status.summary.total}
+                      {integrations.summary.working ?? "—"}/{integrations.summary.total ?? "—"}
                     </div>
-                    <p className="text-xs text-muted-foreground">Services Online</p>
+                    <p className="text-xs text-muted-foreground">Services working</p>
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* Individual Services */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {Object.entries(status.services).map(([key, service]) => (
+                {services.map(([key, service]) => (
                   <Card key={key} className="border-2">
                     <CardContent className="pt-6">
                       <div className="flex items-start gap-4">
-                        <div className={`p-3 rounded-lg ${
-                          !service.configured ? 'bg-yellow-100' :
-                          service.working ? 'bg-green-100' : 'bg-red-100'
-                        }`}>
-                          {getServiceIcon(key)}
+                        <div
+                          className={`p-3 rounded-lg ${
+                            !service.configured
+                              ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300"
+                              : service.working
+                                ? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300"
+                                : "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300"
+                          }`}
+                        >
+                          {serviceIcon(key)}
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2 mb-2">
-                            <h4 className="font-semibold truncate">{getServiceName(key)}</h4>
-                            {getStatusIcon(service)}
-                          </div>
-                          <div className="mb-2">
-                            {getStatusBadge(service)}
-                          </div>
-                          <p className="text-sm text-muted-foreground break-words">
-                            {service.message}
-                          </p>
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <h4 className="font-semibold truncate">{SERVICE_INFO[key]?.name ?? key}</h4>
+                          <StatusBadge service={service} />
+                          <p className="text-sm text-muted-foreground break-words">{service.message}</p>
                         </div>
                       </div>
                     </CardContent>
@@ -172,50 +259,28 @@ export function SystemStatus() {
                 ))}
               </div>
 
-              {/* Configuration Instructions */}
-              {Object.values(status.services).some(s => !s.configured) && (
-                <Card className="border-yellow-200 bg-yellow-50">
-                  <CardHeader>
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4" />
-                      Configuration Required
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Some services are not configured. Add the following to your <code className="bg-white px-2 py-1 rounded">.env.local</code> file:
-                    </p>
-                    <div className="bg-white p-4 rounded-lg border font-mono text-xs space-y-1">
-                      {!status.services.virusTotal.configured && (
-                        <div>VIRUSTOTAL_API_KEY=your_key_here</div>
-                      )}
-                      {!status.services.googleSafeBrowsing.configured && (
-                        <div>GOOGLE_SAFE_BROWSING_API_KEY=your_key_here</div>
-                      )}
-                      {!status.services.openAI.configured && (
-                        <div>OPENAI_API_KEY=your_key_here</div>
-                      )}
-                      {!status.services.database.configured && (
-                        <div>DATABASE_URL=your_database_url_here</div>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-3">
-                      After adding keys, restart the development server with <code className="bg-white px-2 py-1 rounded">npm run dev</code>
-                    </p>
-                  </CardContent>
-                </Card>
+              {unconfigured.length > 0 && (
+                <div className="rounded-lg border border-yellow-300 bg-yellow-50 p-4 dark:border-yellow-800 dark:bg-yellow-950/20">
+                  <p className="text-sm font-medium flex items-center gap-2 mb-2">
+                    <AlertCircle className="w-4 h-4" aria-hidden="true" />
+                    Configuration needed
+                  </p>
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Add these to the server&apos;s <code className="rounded bg-muted px-1.5 py-0.5">.env.local</code> and restart it:
+                  </p>
+                  <pre className="rounded-lg border bg-muted p-3 font-mono text-xs overflow-x-auto">
+                    {Array.from(new Set(unconfigured.map(([key]) => SERVICE_INFO[key]?.envVar ?? key)))
+                      .map((v) => `${v}=your_value_here`)
+                      .join("\n")}
+                  </pre>
+                </div>
               )}
 
-              <div className="text-xs text-muted-foreground text-right">
-                Last checked: {new Date(status.timestamp).toLocaleString()}
-              </div>
-            </div>
-          )}
-
-          {loading && !status && (
-            <div className="text-center py-12">
-              <RefreshCw className="w-12 h-12 animate-spin mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">Testing API integrations...</p>
+              {integrations.timestamp && (
+                <p className="text-xs text-muted-foreground text-right">
+                  Last checked: {new Date(integrations.timestamp).toLocaleString()}
+                </p>
+              )}
             </div>
           )}
         </CardContent>

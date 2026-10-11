@@ -1,117 +1,87 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { count } from 'drizzle-orm';
+import Groq from 'groq-sdk';
 import { VirusTotalService } from '@/services/external/virusTotal';
 import { GoogleSafeBrowsingService } from '@/services/external/googleSafeBrowsing';
-import Groq from 'groq-sdk';
+import { db } from '@/db';
+import { modelConfigs } from '@/db/schema';
+import { requireAdmin } from '@/lib/apiGuard';
+import { GROQ_MODEL } from '@/lib/llm';
+
+export const runtime = 'nodejs';
+
+interface ServiceStatus {
+  configured: boolean;
+  working: boolean;
+  message: string;
+}
+
+const TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, ms = TIMEOUT_MS): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+  ]);
+}
+
+async function probe(name: string, configured: boolean, run: () => Promise<string>): Promise<ServiceStatus> {
+  if (!configured) return { configured, working: false, message: 'Not configured' };
+  try {
+    return { configured, working: true, message: await withTimeout(run()) };
+  } catch (error) {
+    // Upstream error text can contain request details; keep it in server logs only.
+    console.error(`[api] test-apis ${name} probe failed:`, error);
+    return { configured, working: false, message: 'Check failed (see server logs)' };
+  }
+}
 
 /**
- * Test API endpoint to verify external service integrations
- * GET /api/test-apis
+ * GET /api/test-apis — admin-only integration check (header `x-admin-token`).
+ * Calls real upstream APIs and uses quota, so it is not public.
  */
 export async function GET(request: NextRequest) {
-  const results = {
-    virusTotal: {
-      configured: !!process.env.VIRUSTOTAL_API_KEY,
-      working: false,
-      message: '',
-      testUrl: 'http://example.com'
-    },
-    googleSafeBrowsing: {
-      configured: !!process.env.GOOGLE_SAFE_BROWSING_API_KEY,
-      working: false,
-      message: '',
-      testUrl: 'http://example.com'
-    },
-    openAI: {
-      configured: !!process.env.GROQ_API_KEY,
-      working: false,
-      message: '',
-      model: 'llama-3.3-70b-versatile (Groq - FREE!)'
-    },
-    database: {
-      configured: !!process.env.DATABASE_URL,
-      working: false,
-      message: ''
-    }
-  };
+  const denied = requireAdmin(request);
+  if (denied) return denied;
 
-  // Test VirusTotal
-  if (results.virusTotal.configured) {
-    try {
-      const vtResult = await VirusTotalService.analyzeURL('http://example.com');
-      results.virusTotal.working = true;
-      results.virusTotal.message = `Successfully scanned. Engines: ${vtResult.totalEngines}, Detections: ${vtResult.detectionCount}`;
-    } catch (error) {
-      results.virusTotal.message = error instanceof Error ? error.message : 'Test failed';
-    }
-  } else {
-    results.virusTotal.message = 'API key not configured in .env.local';
-  }
-
-  // Test Google Safe Browsing
-  if (results.googleSafeBrowsing.configured) {
-    try {
-      const gsbResult = await GoogleSafeBrowsingService.checkURL('http://example.com');
-      results.googleSafeBrowsing.working = true;
-      results.googleSafeBrowsing.message = `API responding. Threat detected: ${gsbResult.isThreat}`;
-    } catch (error) {
-      results.googleSafeBrowsing.message = error instanceof Error ? error.message : 'Test failed';
-    }
-  } else {
-    results.googleSafeBrowsing.message = 'API key not configured in .env.local';
-  }
-
-  // Test Groq AI (FREE!)
-  if (results.openAI.configured) {
-    try {
-      const groq = new Groq({
-        apiKey: process.env.GROQ_API_KEY,
+  const [virusTotal, googleSafeBrowsing, groq, database] = await Promise.all([
+    probe('virusTotal', !!process.env.VIRUSTOTAL_API_KEY, async () => {
+      const r = await VirusTotalService.analyzeURL('http://example.com');
+      return `Responding. Engines: ${r.totalEngines}, detections: ${r.detectionCount}`;
+    }),
+    probe('googleSafeBrowsing', !!process.env.GOOGLE_SAFE_BROWSING_API_KEY, async () => {
+      const r = await GoogleSafeBrowsingService.checkURL('http://example.com');
+      return `Responding. Threat detected for example.com: ${r.isThreat}`;
+    }),
+    probe('groq', !!process.env.GROQ_API_KEY, async () => {
+      const client = new Groq({ apiKey: process.env.GROQ_API_KEY, timeout: TIMEOUT_MS, maxRetries: 0 });
+      await client.chat.completions.create({
+        model: GROQ_MODEL,
+        messages: [{ role: 'user', content: 'Reply with OK' }],
+        max_tokens: 5,
       });
+      return 'Responding';
+    }),
+    probe('database', !!process.env.DATABASE_URL, async () => {
+      const [row] = await db.select({ value: count() }).from(modelConfigs);
+      return `Connected. Model configs: ${row.value}`;
+    }),
+  ]);
 
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: 'Say "API Working" in 2 words' }],
-        max_tokens: 10,
-      });
-
-      results.openAI.working = true;
-      results.openAI.message = `Llama 3.1 responding: "${completion.choices[0]?.message?.content}"`;
-    } catch (error) {
-      results.openAI.message = error instanceof Error ? error.message : 'Test failed';
-    }
-  } else {
-    results.openAI.message = 'API key not configured in .env.local - Get free key at https://console.groq.com';
-  }
-
-  // Test Database
-  if (results.database.configured) {
-    try {
-      const { db } = await import('@/db');
-      const { modelConfigs } = await import('@/db/schema');
-      const { count } = await import('drizzle-orm');
-      
-      const [result] = await db.select({ value: count() }).from(modelConfigs);
-      results.database.working = true;
-      results.database.message = `Connected. Model configs: ${result.value}`;
-    } catch (error) {
-      results.database.message = error instanceof Error ? error.message : 'Connection failed';
-    }
-  } else {
-    results.database.message = 'DATABASE_URL not configured';
-  }
-
-  // Summary
-  const workingCount = Object.values(results).filter(r => r.working).length;
-  const totalCount = Object.keys(results).length;
+  const services = { virusTotal, googleSafeBrowsing, groq, database };
+  const all = Object.values(services);
+  const workingCount = all.filter(s => s.working).length;
 
   return NextResponse.json({
     success: true,
     summary: {
       working: workingCount,
-      total: totalCount,
-      status: workingCount === totalCount ? 'All systems operational' :
-              workingCount > 0 ? 'Partial functionality' : 'Services unavailable'
+      total: all.length,
+      status:
+        workingCount === all.length ? 'All systems operational' :
+        workingCount > 0 ? 'Partial functionality' : 'Services unavailable',
     },
-    services: results,
-    timestamp: new Date().toISOString()
+    services,
+    timestamp: new Date().toISOString(),
   });
 }

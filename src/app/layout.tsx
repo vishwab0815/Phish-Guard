@@ -21,7 +21,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${outfit.className} mesh-gradient cyber-grid min-h-screen antialiased`}>
+      <body className={`${outfit.className} dark:mesh-gradient cyber-grid min-h-screen antialiased`}>
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

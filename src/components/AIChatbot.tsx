@@ -1,854 +1,292 @@
-import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { motion } from "framer-motion";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Badge } from "./ui/badge";
-import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
-import { Alert, AlertDescription } from "./ui/alert";
+import { AlertTriangle, Brain, Lightbulb, Loader2, MessageSquare, Send, Terminal, User } from "lucide-react";
 import {
-  Bot,
-  User,
-  Send,
-  Lightbulb,
-  Shield,
-  AlertTriangle,
-  CheckCircle,
-  Loader2,
-  Terminal,
-  Brain,
-  Zap,
-  Lock,
-  Eye,
-  Search,
-  Database,
-  Globe,
-  MessageSquare
-} from "lucide-react";
+  BackendService,
+  errorMessage,
+  isAbortError,
+  type ChatTurn,
+  type DomainIntelResponse,
+} from "@/utils/BackendService";
+import { normalizeAnalysis } from "./scan/report";
+import { INDIA_EMERGENCY_STEPS, THREAT_META, isDangerous, verdictSentence } from "./scan/threatLevel";
+import { SimpleMarkdown } from "./SimpleMarkdown";
+
+type MessageKind = "text" | "command" | "error" | "notice";
 
 interface Message {
   id: string;
+  role: "user" | "assistant";
   content: string;
-  sender: 'user' | 'ai';
+  kind: MessageKind;
   timestamp: Date;
-  type?: 'text' | 'command' | 'analysis' | 'warning' | 'success';
-  metadata?: {
-    command?: string;
-    confidence?: number;
-    threat_level?: string;
-  };
+  model?: string;
 }
 
-interface SecurityCommand {
-  command: string;
-  description: string;
-  category: string;
-  usage: string;
-  example: string;
+const WELCOME = `**Hi, I'm the PhishGuard assistant.**
+Ask me anything about scams, phishing or staying safe online. You can also use these commands:
+- \`/scan <link>\` — check a link with the PhishGuard scanner
+- \`/analyze <text>\` — check a suspicious SMS or message
+- \`/threat-intel <domain>\` — look up WHOIS/DNS and reputation records for a domain
+- \`/incident-response\` — what to do if you've been scammed
+- \`/help\` — all commands
+
+I can make mistakes. For anything involving money, verify through official channels.`;
+
+const HELP = `**Commands**
+- \`/scan <link>\` — runs the real link scanner (same as the Scan tab)
+- \`/analyze <text>\` — runs the real message scanner
+- \`/threat-intel <domain>\` — WHOIS, DNS and reputation lookup for a domain
+- \`/security-tips\` — practical habits that stop most scams
+- \`/phish-indicators\` — common warning signs to look for
+- \`/incident-response\` — steps if you clicked, paid or shared details
+- \`/report\` — where to report a scam in India
+
+Anything else you type is answered by the AI model.`;
+
+const SECURITY_TIPS = `**Practical habits that stop most scams**
+1. Never share an OTP, UPI PIN, CVV or password — banks and government agencies never ask for them.
+2. You never need to enter your UPI PIN to receive money. A "collect request" asking for your PIN is a scam.
+3. Don't install screen-sharing or "support" apps (AnyDesk, TeamViewer, QuickSupport) because a caller asked you to.
+4. Type the bank or company website yourself, or use its official app, instead of clicking links in SMS, email or WhatsApp.
+5. Be suspicious of urgency: "account blocked today", "KYC expiring", "parcel held", "electricity cut tonight".
+6. Turn on two-factor authentication for email, banking and social media.
+7. Check unknown links and messages with the Scan tab before acting on them.`;
+
+const PHISH_INDICATORS = `**Common warning signs**
+- Pressure or threats: account suspension, legal action, "digital arrest", disconnection tonight
+- Requests for OTP, PIN, CVV, passwords, Aadhaar/PAN photos or remote-access apps
+- Links that don't match the real website (extra words, odd spellings, unusual endings like .xyz or .top, shortened links)
+- Prizes, lotteries, refunds or job offers you didn't apply for — especially ones asking for a "fee" first
+- Sender addresses or numbers that don't match the organisation, or generic greetings like "Dear customer"
+- Unexpected attachments, especially .apk, .exe, .zip or Office files asking to "enable content"`;
+
+const INCIDENT_RESPONSE = `**If you clicked a link, shared details or paid**
+1. **Call 1930** (National Cyber Crime Helpline) immediately — the sooner you report, the better the chance of freezing the money.
+2. File a complaint at **cybercrime.gov.in** and keep the acknowledgement number.
+3. Call your bank on the number printed on your card or its official website. Block the card/UPI and dispute the transaction.
+4. Change passwords for any account you entered on the fake page, starting with email, and turn on two-factor authentication.
+5. If you installed an app because someone asked you to, uninstall it and disconnect from the internet until it's removed.
+6. Keep evidence: screenshots, phone numbers, transaction IDs, links and email headers.`;
+
+const REPORT_GUIDANCE = `**Reporting a scam in India**
+- Report cyber fraud at **cybercrime.gov.in** or call **1930**.
+- Report fraud calls/SMS/WhatsApp numbers on the **Sanchar Saathi "Chakshu"** portal (sancharsaathi.gov.in).
+- Forward phishing emails to the impersonated company's official abuse/security address.
+
+Domain blocking in PhishGuard is managed by administrators, so it isn't available from chat.`;
+
+const QUICK_COMMANDS = ["/scan ", "/analyze ", "/threat-intel ", "/incident-response"];
+
+const SUGGESTED_QUESTIONS = [
+  "Someone asked for my OTP to cancel an order — what should I do?",
+  "How do I spot a fake KYC update SMS?",
+  "Is it safe to scan a QR code to receive money?",
+  "What makes a link suspicious?",
+];
+
+function fmt(value: string | number | null | undefined, suffix = ""): string {
+  if (value === null || value === undefined || value === "") return "Not available";
+  return `${value}${suffix}`;
+}
+
+function yesNo(value: boolean | null | undefined): string {
+  return typeof value === "boolean" ? (value ? "Yes" : "No") : "Not available";
+}
+
+function formatDomainIntel(domain: string, res: DomainIntelResponse): string {
+  const d = res.domain_intelligence;
+  if (!d) return `No intelligence was returned for \`${domain}\`.`;
+  const whois = d.whois_data ?? null;
+  const dns = d.dns_data ?? null;
+  const rep = d.reputation ?? null;
+  const created = whois?.createdDate ? new Date(whois.createdDate) : null;
+  const lines = [
+    `**Domain lookup: \`${d.domain ?? domain}\`**`,
+    `- Risk score: ${fmt(d.risk_score, "/100")}`,
+    `- On known phishing lists: ${yesNo(rep?.isKnownPhishing)}`,
+    `- On known malware lists: ${yesNo(rep?.isKnownMalware)}`,
+    `- Reports in PhishGuard's records: ${fmt(rep?.reportCount)}`,
+    `- Registered: ${created && !Number.isNaN(created.getTime()) ? created.toLocaleDateString() : "Not available"}`,
+    `- Domain age: ${fmt(whois?.domainAge, " days")}`,
+    `- Registrar: ${fmt(whois?.registrar)}`,
+    `- IP addresses: ${dns?.ipAddresses?.length ? dns.ipAddresses.slice(0, 5).join(", ") : "Not available"}`,
+    `- Mail servers (MX): ${Array.isArray(dns?.mxRecords) ? dns.mxRecords.length : "Not available"}`,
+  ];
+  if (d.indicators?.length) {
+    lines.push("", "**Findings**", ...d.indicators.map((i) => `- ${i}`));
+  }
+  lines.push("", "\"Not available\" means the lookup returned nothing for that field.");
+  return lines.join("\n");
+}
+
+function extractDomain(input: string): string {
+  const trimmed = input.trim();
+  try {
+    return new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname;
+  } catch {
+    return trimmed;
+  }
 }
 
 export function AIChatbot() {
   const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      content: `🛡️ **PhishGuard AI Security Assistant v2.1** 🛡️
-
-Welcome to your advanced cybersecurity command center! I'm equipped with AI-powered threat analysis and can help you with:
-
-🔍 **Quick Commands:**
-• \`/scan [url]\` - Instant URL threat analysis
-• \`/analyze [text]\` - Content analysis for phishing
-• \`/threat-intel [domain]\` - Domain reputation lookup
-• \`/security-tips\` - Latest security recommendations
-• \`/incident-response\` - Emergency response procedures
-
-💡 **Expert Capabilities:**
-• Real-time threat intelligence analysis
-• Phishing detection and prevention
-• Security incident guidance
-• Best practice recommendations
-
-Type \`/help\` for a complete command list or ask me anything about cybersecurity!`,
-      sender: 'ai',
-      timestamp: new Date(),
-      type: 'text'
-    }
+    { id: "welcome", role: "assistant", content: WELCOME, kind: "text", timestamp: new Date() },
   ]);
   const [inputMessage, setInputMessage] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const idRef = useRef(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const securityCommands: SecurityCommand[] = [
-    {
-      command: "/scan",
-      description: "Analyze URLs for threats",
-      category: "Analysis",
-      usage: "/scan <url>",
-      example: "/scan https://suspicious-site.com"
-    },
-    {
-      command: "/analyze",
-      description: "Analyze text content for phishing",
-      category: "Analysis", 
-      usage: "/analyze <text>",
-      example: "/analyze Urgent: Your account will be suspended!"
-    },
-    {
-      command: "/threat-intel",
-      description: "Get threat intelligence on domains",
-      category: "Intelligence",
-      usage: "/threat-intel <domain>",
-      example: "/threat-intel malicious-domain.com"
-    },
-    {
-      command: "/security-tips",
-      description: "Get latest security recommendations",
-      category: "Education",
-      usage: "/security-tips",
-      example: "/security-tips"
-    },
-    {
-      command: "/incident-response",
-      description: "Emergency incident response guide",
-      category: "Emergency",
-      usage: "/incident-response",
-      example: "/incident-response"
-    },
-    {
-      command: "/vulnerability-check",
-      description: "Check for common vulnerabilities",
-      category: "Assessment",
-      usage: "/vulnerability-check <target>",
-      example: "/vulnerability-check email-server"
-    },
-    {
-      command: "/phish-indicators",
-      description: "List current phishing indicators",
-      category: "Intelligence",
-      usage: "/phish-indicators",
-      example: "/phish-indicators"
-    },
-    {
-      command: "/block-domain",
-      description: "Add domain to blocklist",
-      category: "Protection",
-      usage: "/block-domain <domain>",
-      example: "/block-domain phishing-site.com"
-    }
-  ];
-
-  const suggestedQuestions = [
-    "How can I identify advanced phishing attacks?",
-    "What are the latest phishing trends?",
-    "How to respond to a security incident?",
-    "What makes a URL suspicious?",
-    "How to train employees on phishing?",
-    "Explain my recent scan results"
-  ];
+  const nextId = () => `m${++idRef.current}`;
 
   useEffect(() => {
-    // Auto-scroll to bottom when new messages arrive
-    const scrollToBottom = () => {
-      const chatContainer = document.getElementById('chat-messages-container');
-      if (chatContainer) {
-        setTimeout(() => {
-          chatContainer.scrollTop = chatContainer.scrollHeight;
-        }, 100);
-      }
-    };
-    scrollToBottom();
-  }, [messages]);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, isBusy]);
 
-  const processCommand = (command: string, args: string[]): string => {
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const runCommand = async (raw: string, signal: AbortSignal): Promise<{ content: string; kind: MessageKind }> => {
+    const commandRaw = raw.split(/\s+/)[0];
+    const command = commandRaw.toLowerCase();
+    const arg = raw.slice(commandRaw.length).trim();
+
     switch (command) {
-      case "/scan":
-        if (args.length === 0) {
-          return "❌ **Usage Error**\n\nPlease provide a URL to scan.\n**Example:** `/scan https://example.com`";
-        }
-        return analyzeURL(args.join(" "));
-        
-      case "/analyze":
-        if (args.length === 0) {
-          return "❌ **Usage Error**\n\nPlease provide text content to analyze.\n**Example:** `/analyze Your account will be suspended!`";
-        }
-        return analyzeContent(args.join(" "));
-        
-      case "/threat-intel":
-        if (args.length === 0) {
-          return "❌ **Usage Error**\n\nPlease provide a domain to check.\n**Example:** `/threat-intel suspicious-domain.com`";
-        }
-        return getThreatIntel(args[0]);
-        
-      case "/security-tips":
-        return getSecurityTips();
-        
-      case "/incident-response":
-        return getIncidentResponse();
-        
-      case "/vulnerability-check":
-        if (args.length === 0) {
-          return "❌ **Usage Error**\n\nPlease provide a target to check.\n**Example:** `/vulnerability-check email-server`";
-        }
-        return checkVulnerabilities(args.join(" "));
-        
-      case "/phish-indicators":
-        return getPhishingIndicators();
-        
-      case "/block-domain":
-        if (args.length === 0) {
-          return "❌ **Usage Error**\n\nPlease provide a domain to block.\n**Example:** `/block-domain malicious-site.com`";
-        }
-        return blockDomain(args[0]);
-        
       case "/help":
-        return getHelpText();
-        
+        return { content: HELP, kind: "command" };
+      case "/security-tips":
+        return { content: SECURITY_TIPS, kind: "command" };
+      case "/phish-indicators":
+        return { content: PHISH_INDICATORS, kind: "command" };
+      case "/incident-response":
+        return { content: INCIDENT_RESPONSE, kind: "command" };
+      case "/report":
+      case "/block-domain":
+        return { content: REPORT_GUIDANCE, kind: "command" };
+      case "/scan":
+      case "/analyze": {
+        if (!arg) {
+          return {
+            content:
+              command === "/scan"
+                ? "Add a link after the command, e.g. `/scan https://example.com`"
+                : "Add the message text after the command, e.g. `/analyze Your KYC expires today, click here`",
+            kind: "error",
+          };
+        }
+        const kind = command === "/scan" ? "url" : "message";
+        const response =
+          kind === "url" ? await BackendService.analyzeUrl(arg, signal) : await BackendService.analyzeMessage(arg, signal);
+        const report = normalizeAnalysis(kind, response, arg);
+        const lines = [
+          `**Verdict: ${THREAT_META[report.level].label}**`,
+          verdictSentence(report.level, report.kind),
+          `Risk score: ${fmt(report.riskScore, "/100")} · Confidence: ${fmt(report.confidence, "%")}`,
+        ];
+        if (report.recommendations.length) {
+          lines.push("", "**What to do**", ...report.recommendations.map((r) => `- ${r}`));
+        }
+        if (isDangerous(report.level)) {
+          lines.push("", "**Already clicked, entered details or paid?**", ...INDIA_EMERGENCY_STEPS.map((s) => `- ${s}`));
+        }
+        if (report.indicators.length) {
+          lines.push("", "**Findings**", ...report.indicators.map((i) => `- ${i}`));
+        }
+        return { content: lines.join("\n"), kind: "command" };
+      }
+      case "/threat-intel": {
+        if (!arg) return { content: "Add a domain, e.g. `/threat-intel example.com`", kind: "error" };
+        const domain = extractDomain(arg);
+        const res = await BackendService.domainIntel(domain, signal);
+        return { content: formatDomainIntel(domain, res), kind: "command" };
+      }
       default:
-        return `❌ **Unknown Command:** \`${command}\`\n\nType \`/help\` to see all available commands.`;
+        return { content: `Unknown command \`${command}\`. Type \`/help\` to see what's available.`, kind: "error" };
     }
   };
 
-  const analyzeURL = (url: string): string => {
-    // Simulate advanced URL analysis
-    const suspiciousPatterns = ['bit.ly', 'tinyurl', 'secure-bank', 'paypal-verify', 'amazon-update'];
-    const isSuspicious = suspiciousPatterns.some(pattern => url.toLowerCase().includes(pattern));
-    const hasHTTPS = url.startsWith('https://');
-    
-    let threatLevel = 'LOW';
-    let confidence = 75;
-    let riskFactors = [];
-    
-    if (isSuspicious) {
-      threatLevel = 'HIGH';
-      confidence = 92;
-      riskFactors.push('Suspicious domain pattern', 'Potential typosquatting');
-    }
-    
-    if (!hasHTTPS) {
-      threatLevel = threatLevel === 'LOW' ? 'MEDIUM' : threatLevel;
-      confidence += 10;
-      riskFactors.push('No HTTPS encryption');
-    }
-    
-    try {
-      const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
-      if (urlObj.hostname.split('.').length > 4) {
-        riskFactors.push('Excessive subdomains');
-      }
-    } catch {
-      riskFactors.push('Invalid URL format');
-      threatLevel = 'HIGH';
-    }
-
-    return `🔍 **URL Threat Analysis Complete**
-
-**Target:** \`${url}\`
-**Threat Level:** ${threatLevel === 'HIGH' ? '🔴' : threatLevel === 'MEDIUM' ? '🟡' : '🟢'} **${threatLevel}**
-**Confidence:** ${confidence}%
-
-📊 **Analysis Results:**
-${riskFactors.length > 0 ? riskFactors.map(factor => `• ⚠️ ${factor}`).join('\n') : '• ✅ No major threats detected'}
-
-🛡️ **Recommendation:**
-${threatLevel === 'HIGH' ? '**DO NOT VISIT** - Block this URL immediately' : 
-  threatLevel === 'MEDIUM' ? 'Exercise caution - Verify legitimacy before proceeding' : 
-  'URL appears safe but remain vigilant'}
-
-📈 **Scan Details:**
-• Database Version: v2024.1.1
-• Processing Time: 1.2s
-• Analysis Depth: Deep Scan`;
-  };
-
-  const analyzeContent = (content: string): string => {
-    const urgencyWords = ['urgent', 'immediate', 'expires', 'suspended', 'verify now', 'act fast'];
-    const phishingWords = ['click here', 'update payment', 'verify account', 'confirm identity'];
-    const scamWords = ['congratulations', 'winner', 'prize', 'lottery', 'inheritance'];
-    
-    const urgencyCount = urgencyWords.filter(word => content.toLowerCase().includes(word)).length;
-    const phishingCount = phishingWords.filter(word => content.toLowerCase().includes(word)).length;
-    const scamCount = scamWords.filter(word => content.toLowerCase().includes(word)).length;
-    
-    const totalRisk = urgencyCount * 25 + phishingCount * 30 + scamCount * 35;
-    let threatLevel = 'SAFE';
-    let confidence = 85;
-    
-    if (totalRisk >= 60) {
-      threatLevel = 'HIGH RISK';
-      confidence = 94;
-    } else if (totalRisk >= 30) {
-      threatLevel = 'MEDIUM RISK'; 
-      confidence = 88;
-    } else if (totalRisk >= 15) {
-      threatLevel = 'LOW RISK';
-      confidence = 82;
-    }
-
-    return `📝 **Content Analysis Report**
-
-**Content Length:** ${content.length} characters
-**Threat Assessment:** ${threatLevel === 'HIGH RISK' ? '🔴' : threatLevel === 'MEDIUM RISK' ? '🟡' : threatLevel === 'LOW RISK' ? '🟠' : '🟢'} **${threatLevel}**
-**Confidence Score:** ${confidence}%
-
-🎯 **Detection Summary:**
-• Urgency Indicators: ${urgencyCount} found
-• Phishing Patterns: ${phishingCount} detected  
-• Scam Language: ${scamCount} identified
-• Risk Score: ${totalRisk}/100
-
-⚡ **Key Findings:**
-${urgencyCount > 0 ? '• ⚠️ Urgency language detected - common in phishing' : ''}
-${phishingCount > 0 ? '• 🎣 Phishing indicators found - requests personal action' : ''}
-${scamCount > 0 ? '• 💰 Scam terminology present - potential fraud attempt' : ''}
-${totalRisk === 0 ? '• ✅ No suspicious patterns detected' : ''}
-
-🛡️ **Security Recommendation:**
-${threatLevel === 'HIGH RISK' ? '**BLOCK IMMEDIATELY** - This appears to be a phishing attempt' :
-  threatLevel === 'MEDIUM RISK' ? 'Exercise extreme caution - Do not provide personal information' :
-  threatLevel === 'LOW RISK' ? 'Minor concerns - Verify sender through official channels' :
-  'Content appears legitimate but stay vigilant'}`;
-  };
-
-  const getThreatIntel = (domain: string): string => {
-    // Simulate threat intelligence lookup
-    const knownThreats = ['phishing-example.com', 'malware-site.net', 'scam-domain.org'];
-    const isKnownThreat = knownThreats.includes(domain.toLowerCase());
-    
-    const reputation = isKnownThreat ? Math.floor(Math.random() * 30) + 10 : Math.floor(Math.random() * 30) + 70;
-    const registrationAge = Math.floor(Math.random() * 2000) + 30;
-    const geoLocation = ['United States', 'Russia', 'China', 'Netherlands', 'Germany'][Math.floor(Math.random() * 5)];
-
-    return `🌐 **Threat Intelligence Report**
-
-**Domain:** \`${domain}\`
-**Overall Reputation:** ${reputation >= 70 ? '🟢 GOOD' : reputation >= 40 ? '🟡 SUSPICIOUS' : '🔴 MALICIOUS'} (${reputation}/100)
-
-📍 **Domain Information:**
-• Registration Age: ${registrationAge} days
-• Geographic Location: ${geoLocation}
-• SSL Certificate: ${Math.random() > 0.3 ? '✅ Valid' : '❌ Invalid/Missing'}
-• WHOIS Privacy: ${Math.random() > 0.5 ? 'Enabled' : 'Disabled'}
-
-🔍 **Threat Intelligence:**
-${isKnownThreat ? 
-  '• 🚨 **KNOWN MALICIOUS DOMAIN**\n• First reported: 12 days ago\n• Associated with: Phishing campaigns\n• Threat actors: APT-29, Lazarus Group' :
-  '• No direct threat associations found\n• Domain appears in clean reputation databases\n• No recent malicious activity reported'}
-
-📊 **Historical Analysis:**
-• Blacklist Status: ${isKnownThreat ? '🔴 BLACKLISTED (3 sources)' : '🟢 Clean'}
-• Malware Hosting: ${Math.random() > 0.7 ? '⚠️ Detected' : '✅ None detected'}
-• Phishing Reports: ${isKnownThreat ? '🔴 Active (15 reports)' : '✅ No reports'}
-
-⚡ **Real-time Status:**
-• Current Status: ${isKnownThreat ? 'ACTIVE THREAT' : 'MONITORED'}
-• Last Checked: Just now
-• Next Scan: In 6 hours`;
-  };
-
-  const getSecurityTips = (): string => {
-    return `🛡️ **Latest Security Recommendations**
-
-**📊 Current Threat Landscape:**
-• 47% increase in AI-generated phishing emails
-• Business Email Compromise attacks up 81%
-• Mobile phishing attempts increased 52%
-
-**🔥 Today's Critical Tips:**
-
-**1. Advanced Email Security**
-• Enable DMARC, SPF, and DKIM authentication
-• Use AI-powered email filters
-• Implement zero-trust email policies
-• Train staff on deepfake voice/video scams
-
-**2. Mobile Device Protection**
-• Enable remote wipe capabilities
-• Use mobile threat detection apps
-• Verify app store sources before downloads
-• Implement mobile device management (MDM)
-
-**3. AI-Era Phishing Defense**
-• Be suspicious of "too perfect" messages
-• Verify urgent requests through secondary channels
-• Check for AI-generated image inconsistencies
-• Use voice verification for sensitive requests
-
-**4. Zero-Trust Implementation**
-• Verify every user and device
-• Implement conditional access policies
-• Use privileged access management (PAM)
-• Monitor all network traffic continuously
-
-**⚡ Emergency Protocols:**
-• Report suspicious activity within 5 minutes
-• Isolate compromised systems immediately
-• Contact incident response team: ext. 7777
-• Document all actions taken
-
-**📈 Your Security Score: 94% (Excellent)**`;
-  };
-
-  const getIncidentResponse = (): string => {
-    return `🚨 **Emergency Incident Response Protocol**
-
-**⚡ IMMEDIATE ACTIONS (First 5 Minutes):**
-
-**1. Contain the Threat**
-• Disconnect affected systems from network
-• Preserve evidence - DO NOT shut down
-• Isolate user accounts involved
-• Block suspicious IP addresses/domains
-
-**2. Alert Response Team**
-• Security Team: ext. 7777 (24/7 hotline)
-• IT Operations: ext. 5555
-• Management: ext. 9999
-• Legal/Compliance: ext. 3333
-
-**3. Initial Assessment**
-• Identify attack type and scope
-• Document timeline of events
-• Capture screenshots and logs
-• Preserve system memory dumps
-
-**📋 INCIDENT CLASSIFICATION:**
-
-**🔴 CRITICAL (Code Red)**
-• Active data exfiltration
-• Ransomware deployment
-• System compromise with admin access
-• Customer data breach
-
-**🟡 HIGH (Code Orange)** 
-• Phishing campaign targeting employees
-• Suspicious network activity
-• Potential malware infection
-• Unauthorized access attempts
-
-**🟢 MEDIUM (Code Yellow)**
-• Policy violations
-• Minor security tool alerts
-• Suspicious email reports
-• Physical security incidents
-
-**📞 External Contacts:**
-• FBI Cyber Crime: 1-855-292-3937
-• CISA: 1-888-282-0870
-• Legal Counsel: [Your Legal Team]
-• Cyber Insurance: [Your Provider]
-
-**🔍 Evidence Collection:**
-• Network logs and packet captures
-• System event logs
-• Email headers and attachments
-• User activity logs
-• Physical access logs
-
-**Remember: Time is critical in incident response!**`;
-  };
-
-  const checkVulnerabilities = (target: string): string => {
-    return `🔍 **Vulnerability Assessment: ${target}**
-
-**📊 Scan Results:**
-• **Critical:** 0 vulnerabilities
-• **High:** 2 vulnerabilities  
-• **Medium:** 5 vulnerabilities
-• **Low:** 12 vulnerabilities
-• **Info:** 8 findings
-
-**🚨 High Priority Issues:**
-
-**1. CVE-2024-1234 - Email Server**
-• **Risk:** Remote Code Execution
-• **CVSS:** 8.9 (High)
-• **Status:** Patch available
-• **Action:** Apply security update immediately
-
-**2. CVE-2024-5678 - Web Application**
-• **Risk:** SQL Injection
-• **CVSS:** 7.8 (High)  
-• **Status:** Mitigated by WAF
-• **Action:** Code review and fix required
-
-**⚠️ Medium Priority Issues:**
-• Outdated SSL/TLS certificates (3 found)
-• Missing security headers on web servers
-• Weak password policies detected
-• Unnecessary services running
-• Missing endpoint protection on 2 systems
-
-**📈 Security Recommendations:**
-• Implement vulnerability scanning automation
-• Establish patch management schedule
-• Enable real-time threat monitoring
-• Conduct quarterly penetration testing
-• Update security awareness training
-
-**📊 Overall Security Posture: 78% (Good)**
-**Next Assessment:** Scheduled in 30 days`;
-  };
-
-  const getPhishingIndicators = (): string => {
-    return `🎣 **Current Phishing Threat Indicators**
-
-**🔥 Active Campaigns (Last 24 Hours):**
-
-**1. Microsoft 365 Credential Harvesting**
-• **Targets:** Office 365 users
-• **Method:** Fake login pages
-• **Indicators:** emails from "msft-security-team@outlook.com"
-• **Status:** 🔴 Active (127 reports)
-
-**2. Banking Trojan Distribution**
-• **Targets:** Financial institutions
-• **Method:** Malicious Excel attachments
-• **Indicators:** Subject: "Account Statement - Action Required"
-• **Status:** 🔴 Active (89 reports)
-
-**3. CEO Fraud / BEC Attacks**
-• **Targets:** Finance departments
-• **Method:** Executive impersonation
-• **Indicators:** Urgent wire transfer requests
-• **Status:** 🟡 Moderate (34 reports)
-
-**📊 Technical Indicators:**
-
-**🌐 Malicious Domains (Auto-blocked):**
-• secure-microsoft-login[.]net
-• paypal-verification[.]org  
-• amazon-security-alert[.]com
-• bank-of-america-alerts[.]net
-
-**📧 Email Indicators:**
-• Sender reputation below 30%
-• SPF/DKIM failures
-• Suspicious attachment types: .scr, .pif, .exe
-• URL redirects through 3+ hops
-
-**🔗 URL Patterns:**
-• bit.ly/[random] → malicious sites
-• Short domains (less than 6 chars)
-• Recently registered domains (<30 days)
-• Free hosting services with suspicious content
-
-**⚡ AI Detection Patterns:**
-• Urgency language confidence: >85%
-• Grammar inconsistencies
-• Unusual send times (2-6 AM)
-• Generic greetings with personal info requests
-
-**🛡️ Protection Status:**
-• Email filters: ✅ Active (99.7% effective)
-• URL scanning: ✅ Real-time
-• Attachment analysis: ✅ Deep inspection
-• User reporting: ✅ 234 reports today
-
-**📈 Threat Intelligence Updated:** 3 minutes ago`;
-  };
-
-  const blockDomain = (domain: string): string => {
-    return `🚫 **Domain Blocked Successfully**
-
-**Blocked Domain:** \`${domain}\`
-**Timestamp:** ${new Date().toLocaleString()}
-**Action:** Added to enterprise blocklist
-
-**🛡️ Protection Applied:**
-• ✅ DNS blackholing activated
-• ✅ Email filtering updated
-• ✅ Web proxy blocking enabled  
-• ✅ Firewall rules deployed
-
-**📊 Block Details:**
-• **Scope:** Organization-wide
-• **Propagation:** ~5 minutes
-• **Duration:** Permanent (until manual removal)
-• **Backup Systems:** Also updated
-
-**🔍 Additional Actions Taken:**
-• Domain added to threat intelligence feed
-• Related IPs automatically scanned
-• Similar domains queued for analysis
-• Security team notified
-
-**📈 Impact Assessment:**
-• Users protected: 1,247
-• Blocked access attempts: 0 (monitoring)
-• False positive risk: Low
-• Business impact: None expected
-
-**⚡ Next Steps:**
-• Monitor for evasion attempts
-• Check for related domains
-• Update threat signatures
-• Review in 30 days for removal consideration
-
-**Status:** 🟢 **ACTIVE PROTECTION**`;
-  };
-
-  const getHelpText = (): string => {
-    const commandsByCategory = securityCommands.reduce((acc, cmd) => {
-      if (!acc[cmd.category]) acc[cmd.category] = [];
-      acc[cmd.category].push(cmd);
-      return acc;
-    }, {} as Record<string, SecurityCommand[]>);
-
-    let helpText = "🤖 **PhishGuard AI Assistant - Command Reference**\n\n";
-    
-    Object.entries(commandsByCategory).forEach(([category, commands]) => {
-      helpText += `**📂 ${category} Commands:**\n`;
-      commands.forEach(cmd => {
-        helpText += `• \`${cmd.command}\` - ${cmd.description}\n`;
-        helpText += `  Usage: \`${cmd.usage}\`\n\n`;
-      });
-    });
-
-    helpText += `**💡 Pro Tips:**
-• Commands are case-insensitive
-• Use quotes for multi-word arguments
-• Type partial commands for auto-suggestions
-• All actions are logged for security audit
-
-**🔗 Quick Links:**
-• Documentation: /docs
-• API Reference: /api
-• Security Portal: /security
-• Training Materials: /training`;
-
-    return helpText;
-  };
-
-  const getAIResponse = async (userMessage: string): Promise<{ content: string; type: Message['type']; metadata?: any }> => {
-    const message = userMessage.trim();
-
-    // Check if it's a command
-    if (message.startsWith('/')) {
-      const parts = message.split(' ');
-      const command = parts[0].toLowerCase();
-      const args = parts.slice(1);
-
-      return {
-        content: processCommand(command, args),
-        type: 'command',
-        metadata: { command }
-      };
-    }
-
-    // Call real OpenAI API for natural language queries
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message,
-          context: messages.slice(-5).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.content }))
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        return {
-          content: data.response,
-          type: data.fallback ? 'text' : 'analysis',
-          metadata: data.usage ? {
-            tokens: data.usage.total_tokens,
-            model: data.model
-          } : undefined
-        };
-      }
-
-      // Fallback if API call succeeded but no response
-      throw new Error('No response from AI');
-    } catch (error) {
-      console.error('OpenAI error:', error);
-      // Fallback to local responses
-      return getLocalAIResponse(message);
-    }
-  };
-
-  const getLocalAIResponse = (userMessage: string): { content: string; type: Message['type']; metadata?: any } => {
-    const message = userMessage.trim();
-
-    const lowerMessage = message.toLowerCase();
-
-    if (lowerMessage.includes('latest') && lowerMessage.includes('threat')) {
-      return {
-        content: `🔥 **Latest Threat Intelligence Update**
-
-**Current Global Threat Level:** 🟡 ELEVATED
-
-**🚨 Breaking Threats (Last 6 Hours):**
-• **Operation CloudStrike:** Large-scale credential harvesting targeting cloud services
-• **PhishKit-2024:** New automated phishing framework detected
-• **DeepFake CEO Scams:** AI-generated video calls requesting wire transfers
-
-**📊 Real-Time Statistics:**
-• Phishing attempts blocked: 15,247 today
-• Malware downloads prevented: 2,891
-• Suspicious domains identified: 4,156
-• Active threat actors: 23 groups
-
-**⚡ Immediate Actions Required:**
-• Update email security rules
-• Brief executives on deepfake risks  
-• Enable enhanced MFA on cloud services
-• Review vendor email authentication
-
-Use \`/threat-intel\` for specific domain analysis or \`/phish-indicators\` for detailed IOCs.`,
-        type: 'analysis',
-        metadata: { threat_level: 'elevated' }
-      };
-    }
-
-    if (lowerMessage.includes('train') && (lowerMessage.includes('employee') || lowerMessage.includes('staff'))) {
-      return {
-        content: `👥 **Security Awareness Training Guide**
-
-**🎯 Essential Training Modules:**
-
-**1. Phishing Recognition (Critical)**
-• Real-world phishing examples
-• Email header analysis
-• URL inspection techniques
-• Social engineering tactics
-
-**2. Password Security**
-• Password manager usage
-• Multi-factor authentication setup
-• Passkey implementation
-• Credential hygiene best practices
-
-**3. Mobile Security**
-• App store safety
-• Public Wi-Fi risks
-• Device encryption
-• Mobile phishing detection
-
-**4. Incident Reporting**
-• When to report
-• How to report (ext. 7777)
-• What information to provide
-• Post-incident procedures
-
-**📅 Training Schedule:**
-• Monthly: Phishing simulation tests
-• Quarterly: Security awareness updates
-• Annually: Comprehensive security training
-• Ad-hoc: Threat-specific briefings
-
-**🏆 Gamification Elements:**
-• Security champion badges
-• Team competitions
-• Phishing test leaderboards
-• Reward programs for reporting
-
-**📊 Success Metrics:**
-• 95% phishing test pass rate
-• 30-second average report time
-• 99% training completion rate
-• Zero successful phishing attacks
-
-Would you like me to create a custom training program for your organization?`,
-        type: 'success',
-        metadata: { confidence: 95 }
-      };
-    }
-
-    // Default intelligent response
-    return {
-      content: `🤖 **AI Security Assistant Ready**
-
-I understand you're asking about: "${message}"
-
-I can help you with advanced cybersecurity analysis and response. Here are some ways I can assist:
-
-**🔍 Threat Analysis:**
-• Use \`/scan [url]\` for instant URL threat assessment
-• Use \`/analyze [text]\` for content analysis
-• Use \`/threat-intel [domain]\` for reputation checks
-
-**⚡ Quick Actions:**
-• \`/security-tips\` - Latest security recommendations
-• \`/incident-response\` - Emergency response procedures
-• \`/phish-indicators\` - Current threat indicators
-
-**🎯 Specialized Help:**
-• AI-powered phishing detection
-• Real-time threat intelligence
-• Security awareness guidance
-• Incident response coordination
-
-Feel free to ask specific questions or use commands for immediate analysis. I'm here to keep your organization secure!
-
-Type \`/help\` for a complete command reference.`,
-      type: 'text'
-    };
-  };
-
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim()) return;
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      content: inputMessage,
-      sender: 'user',
-      timestamp: new Date(),
-      type: 'text'
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    const messageToProcess = inputMessage;
+  const send = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || isBusy) return;
+
+    const userMessage: Message = { id: nextId(), role: "user", content: trimmed, kind: "text", timestamp: new Date() };
+    const context: ChatTurn[] = messages
+      .filter((m) => m.id !== "welcome" && m.kind !== "error")
+      .slice(-6)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    setMessages((prev) => [...prev, userMessage]);
     setInputMessage("");
-    setIsTyping(true);
+    setIsBusy(true);
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
-      // Get AI response (either from OpenAI or local fallback)
-      const aiResponseData = await getAIResponse(messageToProcess);
-      const aiResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        content: aiResponseData.content,
-        sender: 'ai',
-        timestamp: new Date(),
-        type: aiResponseData.type,
-        metadata: aiResponseData.metadata
-      };
-
-      setMessages(prev => [...prev, aiResponse]);
+      let reply: Omit<Message, "id" | "role" | "timestamp">;
+      if (trimmed.startsWith("/")) {
+        reply = await runCommand(trimmed, controller.signal);
+      } else {
+        const res = await BackendService.chat(trimmed, context, controller.signal);
+        if (!res.response || typeof res.response !== "string") throw new Error("The assistant returned an empty answer — try again.");
+        reply = res.fallback
+          ? {
+              content: `${res.response}\n\n(The AI model isn't configured on this server, so this is a built-in answer.)`,
+              kind: "notice",
+            }
+          : { content: res.response, kind: "text", model: res.model };
+      }
+      if (controller.signal.aborted) return;
+      setMessages((prev) => [...prev, { id: nextId(), role: "assistant", timestamp: new Date(), ...reply }]);
     } catch (error) {
-      console.error('Error getting AI response:', error);
-      const errorResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        content: '⚠️ Error processing your request. Please try again or use `/help` for available commands.',
-        sender: 'ai',
-        timestamp: new Date(),
-        type: 'warning'
-      };
-      setMessages(prev => [...prev, errorResponse]);
+      if (isAbortError(error)) return;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "assistant",
+          kind: "error",
+          timestamp: new Date(),
+          content: errorMessage(error, "Couldn't reach the assistant — try again."),
+        },
+      ]);
     } finally {
-      setIsTyping(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setIsBusy(false);
+        inputRef.current?.focus();
+      }
     }
   };
 
-  const handleSuggestedQuestion = (question: string) => {
-    setInputMessage(question);
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    send(inputMessage);
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") setInputMessage("");
   };
 
-  const getMessageStyle = (type: Message['type']) => {
-    switch (type) {
-      case 'command': return 'bg-purple-50 dark:bg-purple-950/20 border-l-4 border-l-purple-500';
-      case 'analysis': return 'bg-blue-50 dark:bg-blue-950/20 border-l-4 border-l-blue-500';
-      case 'warning': return 'bg-orange-50 dark:bg-orange-950/20 border-l-4 border-l-orange-500';
-      case 'success': return 'bg-green-50 dark:bg-green-950/20 border-l-4 border-l-green-500';
-      default: return 'bg-muted';
+  const bubbleClass = (m: Message) => {
+    if (m.role === "user") return "bg-primary text-primary-foreground";
+    switch (m.kind) {
+      case "command":
+        return "bg-purple-50 dark:bg-purple-950/20 border-l-4 border-l-purple-500";
+      case "error":
+        return "bg-red-50 dark:bg-red-950/20 border-l-4 border-l-red-500";
+      case "notice":
+        return "bg-orange-50 dark:bg-orange-950/20 border-l-4 border-l-orange-500";
+      default:
+        return "bg-muted";
     }
   };
 
@@ -856,153 +294,133 @@ Type \`/help\` for a complete command reference.`,
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
+      transition={{ duration: 0.4 }}
       className="w-full max-w-full space-y-6"
     >
-      {/* Main Chat Interface */}
-      <motion.div
-        initial={{ scale: 0.95 }}
-        animate={{ scale: 1 }}
-        transition={{ duration: 0.3 }}
-      >
-        <Card className="phish-card w-full">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2">
-              <motion.div
-                animate={{
-                  scale: [1, 1.2, 1],
-                  rotate: [0, 5, -5, 0]
-                }}
-                transition={{
-                  duration: 2,
-                  repeat: Infinity,
-                  repeatDelay: 3
-                }}
-              >
-                <Brain className="w-5 h-5 text-purple-500" />
-              </motion.div>
-              AI Security Command Center
-              <Badge variant="outline" className="ml-2 ai-assistant-glow">
-                v2.1 Enhanced
-              </Badge>
-            </CardTitle>
+      <Card className="phish-card w-full">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2">
+            <Brain className="w-5 h-5 text-purple-500" aria-hidden="true" />
+            AI security assistant
+          </CardTitle>
           <CardDescription>
-            Advanced cybersecurity AI with command-line interface and real-time threat analysis
+            Answers come from an AI model (via Groq) when configured. Commands use the real PhishGuard scanners.
           </CardDescription>
         </CardHeader>
-        
+
         <CardContent className="space-y-4">
-          {/* Chat Messages Container with Fixed Height and Scroll */}
-          <div className="border rounded-lg bg-muted/20 h-96 flex flex-col">
-            <div 
-              id="chat-messages-container"
+          <div className="border rounded-lg bg-muted/20 h-[28rem] flex flex-col">
+            <div
+              ref={scrollRef}
               className="flex-1 overflow-y-auto p-4 space-y-4"
-              style={{ maxHeight: '384px' }}
+              role="log"
+              aria-live="polite"
+              aria-label="Conversation"
             >
-              <AnimatePresence mode="popLayout">
-                {messages.map((message, index) => (
-                  <motion.div
-                    key={message.id}
-                    initial={{ opacity: 0, y: 20, scale: 0.8 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    transition={{
-                      type: "spring",
-                      stiffness: 500,
-                      damping: 30,
-                      delay: index * 0.05
-                    }}
-                    className={`flex gap-3 ${
-                      message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'
-                    }`}
-                  >
+              {messages.map((message) => (
+                <div key={message.id} className={`flex gap-3 ${message.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
                   <div className="flex-shrink-0">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                      message.sender === 'user' 
-                        ? 'bg-primary text-primary-foreground' 
-                        : message.type === 'command'
-                        ? 'bg-purple-500 text-white'
-                        : 'bg-muted-foreground text-background'
-                    }`}>
-                      {message.sender === 'user' ? (
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                        message.role === "user"
+                          ? "bg-primary text-primary-foreground"
+                          : message.kind === "error"
+                            ? "bg-red-500 text-white"
+                            : message.kind === "command"
+                              ? "bg-purple-500 text-white"
+                              : "bg-muted-foreground text-background"
+                      }`}
+                      aria-hidden="true"
+                    >
+                      {message.role === "user" ? (
                         <User className="w-4 h-4" />
-                      ) : message.type === 'command' ? (
+                      ) : message.kind === "error" ? (
+                        <AlertTriangle className="w-4 h-4" />
+                      ) : message.kind === "command" ? (
                         <Terminal className="w-4 h-4" />
                       ) : (
                         <Brain className="w-4 h-4" />
                       )}
                     </div>
                   </div>
-                  <div className={`flex-1 max-w-[85%] ${
-                    message.sender === 'user' ? 'text-right' : 'text-left'
-                  }`}>
-                    <div className={`inline-block p-4 rounded-lg ${
-                      message.sender === 'user'
-                        ? 'bg-primary text-primary-foreground'
-                        : getMessageStyle(message.type)
-                    }`}>
-                      <div className="whitespace-pre-wrap text-sm font-mono break-words">
-                        {message.content}
-                      </div>
-                      {message.metadata && (
-                        <div className="mt-2 pt-2 border-t border-current/20">
-                          <div className="text-xs opacity-75">
-                            {message.metadata.command && `Command: ${message.metadata.command}`}
-                            {message.metadata.confidence && ` | Confidence: ${message.metadata.confidence}%`}
-                            {message.metadata.threat_level && ` | Threat Level: ${message.metadata.threat_level.toUpperCase()}`}
-                          </div>
-                        </div>
+                  <div className={`flex-1 max-w-[85%] ${message.role === "user" ? "text-right" : "text-left"}`}>
+                    <span className="sr-only">{message.role === "user" ? "You said:" : "Assistant:"}</span>
+                    <div className={`inline-block p-3 rounded-lg text-left text-sm ${bubbleClass(message)}`}>
+                      {message.role === "user" ? (
+                        <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                      ) : (
+                        <SimpleMarkdown text={message.content} />
                       )}
                     </div>
-                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
-                      <span>{message.timestamp.toLocaleTimeString()}</span>
-                      {message.type === 'command' && <Terminal className="w-3 h-3" />}
-                      {message.type === 'analysis' && <Search className="w-3 h-3" />}
+                    {/* Time differs between server and browser (clock + locale), so skip the hydration check */}
+                    <div className="text-xs text-muted-foreground mt-1" suppressHydrationWarning>
+                      {message.timestamp.toLocaleTimeString()}
+                      {message.model ? ` · ${message.model}` : ""}
                     </div>
                   </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-              
-              {/* Typing Indicator */}
-              {isTyping && (
-                <div className="flex gap-3">
-                  <div className="flex-shrink-0">
-                    <div className="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center">
-                      <Brain className="w-4 h-4 text-white" />
-                    </div>
+                </div>
+              ))}
+
+              {isBusy && (
+                <div className="flex gap-3" role="status">
+                  <div className="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center" aria-hidden="true">
+                    <Brain className="w-4 h-4 text-white" />
                   </div>
-                  <div className="flex-1">
-                    <div className="inline-block p-3 rounded-lg bg-purple-50 dark:bg-purple-950/20">
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
-                        <span className="text-sm text-purple-700 dark:text-purple-300">AI analyzing and processing...</span>
-                      </div>
-                    </div>
+                  <div className="inline-block p-3 rounded-lg bg-purple-50 dark:bg-purple-950/20">
+                    <span className="flex items-center gap-2 text-sm text-purple-700 dark:text-purple-300">
+                      <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                      Working on it…
+                    </span>
                   </div>
                 </div>
               )}
             </div>
           </div>
 
+          <form onSubmit={handleSubmit} className="flex gap-2">
+            <Input
+              ref={inputRef}
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask about a scam, or type /help"
+              aria-label="Message the assistant"
+              maxLength={4000}
+              disabled={isBusy}
+              className="font-mono bg-input-background backdrop-blur-sm"
+            />
+            <Button
+              type="submit"
+              disabled={!inputMessage.trim() || isBusy}
+              size="icon"
+              className="security-button"
+              aria-label="Send message"
+            >
+              <Send className="w-4 h-4" aria-hidden="true" />
+            </Button>
+          </form>
+
           <Separator />
 
-          {/* Quick Commands */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <Terminal className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Quick Commands</span>
+              <Terminal className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
+              <span className="text-sm font-medium">Quick commands</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {['/scan', '/analyze', '/threat-intel', '/security-tips'].map((cmd) => (
+              {QUICK_COMMANDS.map((cmd) => (
                 <Button
                   key={cmd}
+                  type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setInputMessage(cmd + ' ')}
+                  onClick={() => {
+                    setInputMessage(cmd);
+                    inputRef.current?.focus();
+                  }}
                   className="text-xs font-mono justify-start security-button"
                 >
-                  {cmd}
+                  {cmd.trim()}
                 </Button>
               ))}
             </div>
@@ -1010,96 +428,30 @@ Type \`/help\` for a complete command reference.`,
 
           <Separator />
 
-          {/* Suggested Questions */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <Lightbulb className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Expert Guidance</span>
+              <Lightbulb className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
+              <span className="text-sm font-medium">Try asking</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {suggestedQuestions.map((question, index) => (
+              {SUGGESTED_QUESTIONS.map((question) => (
                 <Button
-                  key={index}
+                  key={question}
+                  type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => handleSuggestedQuestion(question)}
+                  onClick={() => send(question)}
+                  disabled={isBusy}
                   className="text-xs justify-start h-auto py-2 px-3 whitespace-normal text-left"
                 >
-                  <MessageSquare className="w-3 h-3 mr-2 flex-shrink-0" />
+                  <MessageSquare className="w-3 h-3 mr-2 flex-shrink-0" aria-hidden="true" />
                   {question}
                 </Button>
               ))}
             </div>
           </div>
-
-          <Separator />
-
-          {/* Input Area */}
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <Input
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder="Ask about security or use /commands for analysis..."
-                disabled={isTyping}
-                className="font-mono bg-input-background backdrop-blur-sm"
-              />
-            </div>
-            <Button 
-              onClick={handleSendMessage} 
-              disabled={!inputMessage.trim() || isTyping}
-              size="icon"
-              className="security-button"
-            >
-              <Send className="w-4 h-4" />
-            </Button>
-          </div>
         </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* Enhanced Status Dashboard */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.2 }}
-      >
-        <Card className="phish-card">
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="flex items-center gap-3 p-3 border rounded-lg phish-card">
-              <Shield className="w-8 h-8 text-green-500 animate-pulse-soft" />
-              <div>
-                <h4 className="font-medium">Protection Status</h4>
-                <p className="text-sm text-muted-foreground">All systems secure</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 p-3 border rounded-lg phish-card">
-              <Database className="w-8 h-8 text-blue-500" />
-              <div>
-                <h4 className="font-medium">Threat Database</h4>
-                <p className="text-sm text-muted-foreground">Updated 3 min ago</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 p-3 border rounded-lg phish-card">
-              <Zap className="w-8 h-8 text-purple-500" />
-              <div>
-                <h4 className="font-medium">AI Engine</h4>
-                <p className="text-sm text-muted-foreground">99.7% accuracy</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 p-3 border rounded-lg phish-card">
-              <Globe className="w-8 h-8 text-orange-500" />
-              <div>
-                <h4 className="font-medium">Global Threats</h4>
-                <p className="text-sm text-muted-foreground">2,847 blocked today</p>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-        </Card>
-      </motion.div>
+      </Card>
     </motion.div>
   );
 }

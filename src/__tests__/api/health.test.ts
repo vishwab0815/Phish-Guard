@@ -1,84 +1,70 @@
+/** @jest-environment node */
+
 /**
- * Health Check API Tests
- *
- * Tests for /api/health endpoint
- * Verifies system status, database connectivity, and available models
+ * Health Check API Tests — /api/health
  */
 
-import { NextRequest } from 'next/server'
+const findMany = jest.fn()
 
-// Mock Drizzle
 jest.mock('@/db', () => ({
   db: {
     query: {
       modelConfigs: {
-        findMany: jest.fn().mockResolvedValue([
-          { modelId: 'url_analyzer_v1', state: 'ACTIVE' },
-          { modelId: 'domain_service_v1', state: 'ACTIVE' },
-        ]),
+        findMany: (...args: unknown[]) => findMany(...args),
       },
     },
   },
 }))
 
-describe('/api/health', () => {
-  let handler: any
+import { GET } from '@/app/api/health/route'
 
-  beforeAll(async () => {
-    // Dynamically import the route handler
-    const { GET } = await import('@/app/api/health/route')
-    handler = GET
+describe('/api/health', () => {
+  beforeEach(() => {
+    findMany.mockReset()
+    findMany.mockResolvedValue([
+      { modelId: 'url_analyzer_v1', state: 'ACTIVE' },
+      { modelId: 'email_scanner_v2', state: 'ACTIVE' },
+    ])
   })
 
-  it('should return healthy status when database is connected', async () => {
-    const response = await handler()
+  it('returns ok when the database responds', async () => {
+    const response = await GET()
     const data = await response.json()
 
     expect(response.status).toBe(200)
     expect(data.success).toBe(true)
-    expect(data.status).toBe('healthy')
-    expect(data.database).toBe('connected')
+    expect(data.status).toBe('ok')
+    expect(data.database).toBe('up')
   })
 
-  it('should include available models in response', async () => {
-    const response = await handler()
-    const data = await response.json()
+  it('includes available models', async () => {
+    const data = await (await GET()).json()
 
-    expect(data.models).toBeDefined()
-    expect(Array.isArray(data.models)).toBe(true)
-    expect(data.models_available).toBeGreaterThan(0)
+    expect(data.models).toEqual(['url_analyzer_v1', 'email_scanner_v2'])
+    expect(data.models_available).toBe(2)
   })
 
-  it('should include timestamp in response', async () => {
-    const response = await handler()
-    const data = await response.json()
-
-    expect(data.timestamp).toBeDefined()
-    // Verify it's a valid ISO timestamp
-    expect(new Date(data.timestamp).getTime()).toBeGreaterThan(0)
+  it('includes a valid ISO timestamp', async () => {
+    const data = await (await GET()).json()
+    expect(new Date(data.timestamp).toISOString()).toBe(data.timestamp)
   })
 
-  it('should return correct content type', async () => {
-    const response = await handler()
-
+  it('returns JSON', async () => {
+    const response = await GET()
     expect(response.headers.get('content-type')).toContain('application/json')
   })
-})
 
-describe('API Error Handling', () => {
-  it('should return 400 for invalid URL format', async () => {
-    // This would test the analyze/url endpoint
-    // Implementation depends on how you structure the test
-    expect(true).toBe(true) // Placeholder
-  })
+  it('reports degraded (scanner still usable) and does not leak the database error', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    findMany.mockRejectedValue(new Error('password authentication failed for user "postgres" at db.internal:5432'))
 
-  it('should return 503 when database is unavailable', async () => {
-    // Mock database connection failure
-    expect(true).toBe(true) // Placeholder
-  })
+    const response = await GET()
+    const data = await response.json()
 
-  it('should include error message in response', async () => {
-    // Verify error responses contain helpful messages
-    expect(true).toBe(true) // Placeholder
+    expect(response.status).toBe(200)
+    expect(data.status).toBe('degraded')
+    expect(data.database).toBe('down')
+    expect(JSON.stringify(data)).not.toMatch(/password|db\.internal|postgres/)
+    spy.mockRestore()
   })
 })

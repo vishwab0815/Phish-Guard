@@ -1,85 +1,134 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Switch } from "./ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Slider } from "./ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
-import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
-import { Shield, Save, Loader2 } from "lucide-react";
+import { Alert, AlertDescription } from "./ui/alert";
+import { AlertTriangle, Loader2, RotateCcw, Save, Shield } from "lucide-react";
 import { SystemStatus } from "./SystemStatus";
 import { toast } from "sonner";
+import {
+  BackendService as DefaultBackendService,
+  errorMessage,
+  isAbortError,
+  type BackendServiceType,
+  type UserSettings,
+} from "@/utils/BackendService";
 
 interface SettingsProps {
-  backendService: any;
+  backendService?: BackendServiceType;
 }
 
-export function Settings({ backendService }: SettingsProps) {
-  const [notifications, setNotifications] = useState(true);
-  const [realTimeScanning, setRealTimeScanning] = useState(true);
-  const [autoQuarantine, setAutoQuarantine] = useState(false);
-  const [sensitivityLevel, setSensitivityLevel] = useState([75]);
-  const [apiEndpoint, setApiEndpoint] = useState("");
-  const [threatDbUpdates, setThreatDbUpdates] = useState(true);
-  const [defaultAction, setDefaultAction] = useState("warn");
-  const [securityLevel, setSecurityLevel] = useState("medium");
-  const [dataRetention, setDataRetention] = useState("90");
+const DEFAULTS: UserSettings = {
+  realTimeScanning: true,
+  autoQuarantine: false,
+  detectionSensitivity: 50,
+  defaultAction: "warn",
+  emailAlerts: true,
+  desktopAlerts: true,
+  dailySummary: false,
+  dataRetentionDays: 30,
+  securityLevel: "medium",
+};
+
+const SECURITY_LEVELS = [
+  { value: "low", label: "Basic" },
+  { value: "medium", label: "Standard" },
+  { value: "high", label: "High" },
+  { value: "paranoid", label: "Maximum" },
+];
+
+const RETENTION_OPTIONS = ["30", "90", "180", "365"];
+
+function merge(partial: Partial<UserSettings>): UserSettings {
+  const s = { ...DEFAULTS };
+  if (typeof partial.realTimeScanning === "boolean") s.realTimeScanning = partial.realTimeScanning;
+  if (typeof partial.autoQuarantine === "boolean") s.autoQuarantine = partial.autoQuarantine;
+  if (typeof partial.detectionSensitivity === "number") s.detectionSensitivity = partial.detectionSensitivity;
+  if (typeof partial.defaultAction === "string") s.defaultAction = partial.defaultAction;
+  if (typeof partial.emailAlerts === "boolean") s.emailAlerts = partial.emailAlerts;
+  if (typeof partial.desktopAlerts === "boolean") s.desktopAlerts = partial.desktopAlerts;
+  if (typeof partial.dailySummary === "boolean") s.dailySummary = partial.dailySummary;
+  if (typeof partial.dataRetentionDays === "number") s.dataRetentionDays = partial.dataRetentionDays;
+  if (typeof partial.securityLevel === "string") s.securityLevel = partial.securityLevel;
+  return s;
+}
+
+function SettingRow({
+  id,
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="space-y-0.5">
+        <Label htmlFor={id}>{label}</Label>
+        <p className="text-sm text-muted-foreground">{description}</p>
+      </div>
+      <Switch id={id} checked={checked} onCheckedChange={onChange} />
+    </div>
+  );
+}
+
+export function Settings({ backendService = DefaultBackendService }: SettingsProps) {
+  const [settings, setSettings] = useState<UserSettings>(DEFAULTS);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Load settings on mount
-  useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const response = await backendService.getSettings();
-        if (response.success && response.settings) {
-          const s = response.settings;
-          setRealTimeScanning(s.realTimeScanning ?? true);
-          setAutoQuarantine(s.autoQuarantine ?? false);
-          setSensitivityLevel([s.detectionSensitivity ?? 75]);
-          setDefaultAction(s.defaultAction ?? 'warn');
-          setNotifications(s.emailAlerts ?? true);
-          setThreatDbUpdates(s.autoUpdate ?? true);
-          setApiEndpoint(s.apiEndpoint ?? '');
-          setSecurityLevel(s.securityLevel ?? 'medium');
-          setDataRetention(String(s.dataRetentionDays ?? 90));
-        }
-      } catch (error) {
-        console.error('Failed to load settings:', error);
-      }
-    };
-    loadSettings();
-  }, [backendService]);
+  const update = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) =>
+    setSettings((prev) => ({ ...prev, [key]: value }));
 
-  const handleSaveSettings = async () => {
+  // State is only set inside promise callbacks (never synchronously in an effect).
+  const load = useCallback(
+    (signal?: AbortSignal) =>
+      backendService.getSettings(signal).then(
+        (res) => {
+          if (signal?.aborted) return;
+          setSettings(merge(res.settings));
+          setLoadError(null);
+          setLoaded(true);
+        },
+        (error) => {
+          if (isAbortError(error) || signal?.aborted) return;
+          setLoadError(errorMessage(error, "Couldn't load your settings."));
+        }
+      ),
+    [backendService]
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  const handleSave = async () => {
     setSaving(true);
     try {
-      const result = await backendService.saveSettings({
-        realTimeScanning,
-        autoQuarantine,
-        detectionSensitivity: sensitivityLevel[0],
-        defaultAction,
-        emailAlerts: notifications,
-        desktopAlerts: notifications,
-        dailySummary: false,
-        autoUpdate: threatDbUpdates,
-        apiEndpoint,
-        securityLevel,
-        dataRetentionDays: parseInt(dataRetention),
-      });
-      if (result.success) {
-        toast.success('Settings saved successfully');
-      } else {
-        toast.error('Failed to save settings');
-      }
-    } catch {
-      toast.error('Failed to save settings');
+      const res = await backendService.saveSettings(settings);
+      if (res.settings) setSettings(merge(res.settings));
+      toast.success("Settings saved");
+    } catch (error) {
+      toast.error(errorMessage(error, "Couldn't save settings — try again."));
     } finally {
       setSaving(false);
     }
   };
+
+  const sensitivity = settings.detectionSensitivity;
 
   return (
     <div className="space-y-6">
@@ -87,17 +136,30 @@ export function Settings({ backendService }: SettingsProps) {
         <CardHeader>
           <CardTitle>Settings</CardTitle>
           <CardDescription>
-            Configure your phishing detection preferences and system behavior
+            Your preferences are saved for this browser. They aren&apos;t acted on yet: every scan runs all checks,
+            and alerts, auto-quarantine and data-retention clean-up aren&apos;t automated.
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {loadError && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+              <AlertDescription>
+                <span>{loadError} Saving is disabled until your current settings load, so nothing gets overwritten.</span>
+                <Button size="sm" variant="outline" className="mt-2 w-fit" onClick={() => load()}>
+                  <RotateCcw className="w-4 h-4 mr-2" aria-hidden="true" />
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
           <Tabs defaultValue="system" className="w-full">
-            <TabsList className="grid w-full grid-cols-5">
-              <TabsTrigger value="system">System Status</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 h-auto">
+              <TabsTrigger value="system">System status</TabsTrigger>
               <TabsTrigger value="detection">Detection</TabsTrigger>
               <TabsTrigger value="notifications">Notifications</TabsTrigger>
-              <TabsTrigger value="api">API</TabsTrigger>
-              <TabsTrigger value="security">Security</TabsTrigger>
+              <TabsTrigger value="security">Data &amp; security</TabsTrigger>
             </TabsList>
 
             <TabsContent value="system" className="space-y-6 mt-6">
@@ -105,277 +167,144 @@ export function Settings({ backendService }: SettingsProps) {
             </TabsContent>
 
             <TabsContent value="detection" className="space-y-6 mt-6">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>Real-time Scanning</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Automatically scan content as it's received
-                    </p>
-                  </div>
-                  <Switch
-                    checked={realTimeScanning}
-                    onCheckedChange={setRealTimeScanning}
-                  />
-                </div>
-
+              <fieldset disabled={!loaded} className="space-y-4 disabled:opacity-60">
+                <SettingRow
+                  id="setting-realtime"
+                  label="Real-time scanning"
+                  description="Preference for scanning content as soon as it's received"
+                  checked={settings.realTimeScanning}
+                  onChange={(v) => update("realTimeScanning", v)}
+                />
                 <Separator />
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>Auto-quarantine Threats</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Automatically isolate high-risk content
-                    </p>
-                  </div>
-                  <Switch
-                    checked={autoQuarantine}
-                    onCheckedChange={setAutoQuarantine}
-                  />
-                </div>
-
+                <SettingRow
+                  id="setting-quarantine"
+                  label="Auto-quarantine threats"
+                  description="Preference for isolating high-risk content automatically"
+                  checked={settings.autoQuarantine}
+                  onChange={(v) => update("autoQuarantine", v)}
+                />
                 <Separator />
-
                 <div className="space-y-3">
-                  <Label>Detection Sensitivity</Label>
+                  <Label id="sensitivity-label">Detection sensitivity</Label>
                   <div className="px-3">
                     <Slider
-                      value={sensitivityLevel}
-                      onValueChange={setSensitivityLevel}
+                      aria-labelledby="sensitivity-label"
+                      value={[sensitivity]}
+                      onValueChange={(v) => update("detectionSensitivity", v[0] ?? sensitivity)}
                       max={100}
                       min={0}
                       step={5}
                       className="w-full"
                     />
-                    <div className="flex justify-between text-sm text-muted-foreground mt-1">
+                    <div className="flex justify-between text-sm text-muted-foreground mt-1" aria-hidden="true">
                       <span>Low</span>
                       <span>Medium</span>
                       <span>High</span>
                     </div>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Current sensitivity: {sensitivityLevel[0]}% - {
-                      sensitivityLevel[0] < 40 ? 'Low' :
-                      sensitivityLevel[0] < 70 ? 'Medium' : 'High'
-                    }
+                    Current sensitivity: {sensitivity}% — {sensitivity < 40 ? "Low" : sensitivity < 70 ? "Medium" : "High"}
                   </p>
                 </div>
-
                 <Separator />
-
                 <div className="space-y-3">
-                  <Label>Default Action for High-Risk Content</Label>
-                  <Select defaultValue="quarantine">
-                    <SelectTrigger>
+                  <Label htmlFor="setting-default-action">Default action for high-risk content</Label>
+                  <Select value={settings.defaultAction} onValueChange={(v) => update("defaultAction", v)} disabled={!loaded}>
+                    <SelectTrigger id="setting-default-action">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="block">Block immediately</SelectItem>
                       <SelectItem value="quarantine">Quarantine for review</SelectItem>
-                      <SelectItem value="warn">Warn user only</SelectItem>
+                      <SelectItem value="warn">Warn me only</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
+              </fieldset>
             </TabsContent>
 
             <TabsContent value="notifications" className="space-y-6 mt-6">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>Enable Notifications</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Receive alerts about threats and system status
-                    </p>
-                  </div>
-                  <Switch
-                    checked={notifications}
-                    onCheckedChange={setNotifications}
-                  />
-                </div>
-
+              <fieldset disabled={!loaded} className="space-y-4 disabled:opacity-60">
+                <SettingRow
+                  id="setting-email-alerts"
+                  label="Email alerts"
+                  description="Get an email when a scan is rated high-risk or critical"
+                  checked={settings.emailAlerts}
+                  onChange={(v) => update("emailAlerts", v)}
+                />
                 <Separator />
-
-                <div className="space-y-3">
-                  <Label>Notification Types</Label>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm">High-risk threats detected</span>
-                      <Switch defaultChecked />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm">Daily security summaries</span>
-                      <Switch defaultChecked />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm">System updates available</span>
-                      <Switch />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm">Database updates completed</span>
-                      <Switch />
-                    </div>
-                  </div>
-                </div>
-
+                <SettingRow
+                  id="setting-desktop-alerts"
+                  label="Desktop alerts"
+                  description="Show a browser notification for high-risk results"
+                  checked={settings.desktopAlerts}
+                  onChange={(v) => update("desktopAlerts", v)}
+                />
                 <Separator />
-
-                <div className="space-y-3">
-                  <Label htmlFor="email-notifications">Notification Email</Label>
-                  <Input
-                    id="email-notifications"
-                    type="email"
-                    placeholder="admin@company.com"
-                    defaultValue="admin@company.com"
-                  />
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="api" className="space-y-6 mt-6">
-              <div className="space-y-4">
-                <div className="space-y-3">
-                  <Label htmlFor="api-endpoint">API Endpoint</Label>
-                  <Input
-                    id="api-endpoint"
-                    value={apiEndpoint}
-                    onChange={(e) => setApiEndpoint(e.target.value)}
-                  />
-                  <p className="text-sm text-muted-foreground">
-                    Base URL for the phishing detection API
-                  </p>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <Label htmlFor="api-key">API Key</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="api-key"
-                      type="password"
-                      placeholder="Enter your API key"
-                      defaultValue="pk_live_example_key_123"
-                    />
-                    <Button variant="outline">Test</Button>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <Label>API Rate Limiting</Label>
-                  <Select defaultValue="standard">
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="basic">Basic (10 req/min)</SelectItem>
-                      <SelectItem value="standard">Standard (60 req/min)</SelectItem>
-                      <SelectItem value="premium">Premium (300 req/min)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <Label>Current Usage</Label>
-                  <div className="grid grid-cols-2 gap-4">
-                    <Card>
-                      <CardContent className="pt-4">
-                        <div className="text-2xl font-bold">2,847</div>
-                        <p className="text-sm text-muted-foreground">Requests today</p>
-                      </CardContent>
-                    </Card>
-                    <Card>
-                      <CardContent className="pt-4">
-                        <div className="text-2xl font-bold">847MB</div>
-                        <p className="text-sm text-muted-foreground">Data processed</p>
-                      </CardContent>
-                    </Card>
-                  </div>
-                </div>
-              </div>
+                <SettingRow
+                  id="setting-daily-summary"
+                  label="Daily summary"
+                  description="A once-a-day summary of your scans"
+                  checked={settings.dailySummary}
+                  onChange={(v) => update("dailySummary", v)}
+                />
+              </fieldset>
             </TabsContent>
 
             <TabsContent value="security" className="space-y-6 mt-6">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>Automatic Threat Database Updates</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Keep threat signatures up to date
-                    </p>
-                  </div>
-                  <Switch
-                    checked={threatDbUpdates}
-                    onCheckedChange={setThreatDbUpdates}
-                  />
-                </div>
-
-                <Separator />
-
+              <fieldset disabled={!loaded} className="space-y-4 disabled:opacity-60">
                 <div className="space-y-3">
-                  <Label>Data Retention Period</Label>
-                  <Select defaultValue="90">
-                    <SelectTrigger>
+                  <Label htmlFor="setting-retention">Data retention period</Label>
+                  <Select
+                    value={String(settings.dataRetentionDays)}
+                    onValueChange={(v) => update("dataRetentionDays", parseInt(v, 10))}
+                    disabled={!loaded}
+                  >
+                    <SelectTrigger id="setting-retention">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="30">30 days</SelectItem>
-                      <SelectItem value="90">90 days</SelectItem>
-                      <SelectItem value="180">180 days</SelectItem>
-                      <SelectItem value="365">1 year</SelectItem>
+                      {Array.from(new Set([...RETENTION_OPTIONS, String(settings.dataRetentionDays)])).map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {d === "365" ? "1 year" : `${d} days`}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-sm text-muted-foreground">
-                    How long to keep scan history and logs
-                  </p>
+                  <p className="text-sm text-muted-foreground">How long to keep your scan history</p>
                 </div>
 
                 <Separator />
 
                 <div className="space-y-3">
-                  <Label>Security Level</Label>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Button variant="outline" className="justify-start">
-                      <Shield className="w-4 h-4 mr-2" />
-                      Basic
-                    </Button>
-                    <Button variant="default" className="justify-start">
-                      <Shield className="w-4 h-4 mr-2" />
-                      Standard
-                    </Button>
-                    <Button variant="outline" className="justify-start">
-                      <Shield className="w-4 h-4 mr-2" />
-                      Maximum
-                    </Button>
+                  <Label id="security-level-label">Security level</Label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="group" aria-labelledby="security-level-label">
+                    {SECURITY_LEVELS.map((lvl) => {
+                      const active = settings.securityLevel === lvl.value;
+                      return (
+                        <Button
+                          key={lvl.value}
+                          type="button"
+                          variant={active ? "default" : "outline"}
+                          aria-pressed={active}
+                          className="justify-start"
+                          onClick={() => update("securityLevel", lvl.value)}
+                        >
+                          <Shield className="w-4 h-4 mr-2" aria-hidden="true" />
+                          {lvl.label}
+                        </Button>
+                      );
+                    })}
                   </div>
                 </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <Label>Trusted Domains</Label>
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    <Badge variant="secondary">company.com</Badge>
-                    <Badge variant="secondary">secure-partner.com</Badge>
-                    <Badge variant="secondary">trusted-vendor.org</Badge>
-                  </div>
-                  <div className="flex gap-2">
-                    <Input placeholder="Add trusted domain..." />
-                    <Button variant="outline">Add</Button>
-                  </div>
-                </div>
-              </div>
+              </fieldset>
             </TabsContent>
           </Tabs>
 
           <div className="flex justify-end pt-6">
-            <Button onClick={handleSaveSettings} disabled={saving} className="flex items-center gap-2">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {saving ? 'Saving...' : 'Save Settings'}
+            <Button onClick={handleSave} disabled={saving || !loaded} className="flex items-center gap-2">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Save className="w-4 h-4" aria-hidden="true" />}
+              {saving ? "Saving…" : "Save settings"}
             </Button>
           </div>
         </CardContent>
