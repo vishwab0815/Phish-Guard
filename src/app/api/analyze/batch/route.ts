@@ -1,17 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '@/db';
-import { modelConfigs, scanJobs, scanResults } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { scanJobs } from '@/db/schema';
 import { MasterDetector } from '@/services/detection/masterDetector';
+import { ensureUser, getSessionUserId } from '@/lib/session';
+import { enforceRateLimit, LIMITS, parseJson } from '@/lib/apiGuard';
+import { getModelStatus, isBlockedHostError, jsonError, rejectIfTooLarge, serverError, UUID_RE } from '../../_lib/http';
 
-interface BatchRequest {
-  urls: string[];
-  user_id?: string;
-}
+export const runtime = 'nodejs';
+
+const MAX_BATCH_SIZE = 10;
+
+const bodySchema = z.object({
+  urls: z
+    .array(z.string().trim().min(1, 'URL cannot be empty').max(2048, 'URL is too long'))
+    .min(1, 'Provide at least one URL')
+    .max(MAX_BATCH_SIZE, `Batch size exceeds maximum limit of ${MAX_BATCH_SIZE} URLs`),
+});
 
 interface BatchResult {
   url: string;
   success: boolean;
+  scan_id?: string | null;
   result?: {
     confidence: number;
     threat_level: string;
@@ -22,61 +33,37 @@ interface BatchResult {
   error?: string;
 }
 
+/** POST /api/analyze/batch — body `{ urls: string[] }` (max 10). Each URL counts against the analyze limit. */
 export async function POST(request: NextRequest) {
   try {
-    const { urls, user_id }: BatchRequest = await request.json();
+    const tooLarge = rejectIfTooLarge(request, 64 * 1024);
+    if (tooLarge) return tooLarge;
 
-    // Validate input
-    if (!urls || !Array.isArray(urls) || urls.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid URLs array provided' },
-        { status: 400 }
-      );
+    const userId = await getSessionUserId();
+
+    const parsed = await parseJson(request, bodySchema);
+    if (parsed.error) return parsed.error;
+    const { urls } = parsed.data;
+
+    // One rate-limit unit per URL, so a batch can't be used to get around the per-scan limit.
+    for (let i = 0; i < urls.length; i++) {
+      const limited = await enforceRateLimit(request, userId, 'analyze', LIMITS.analyze);
+      if (limited) return limited;
     }
 
-    // Limit batch size to prevent abuse
-    const MAX_BATCH_SIZE = 10;
-    if (urls.length > MAX_BATCH_SIZE) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Batch size exceeds maximum limit of ${MAX_BATCH_SIZE} URLs`,
-        },
-        { status: 400 }
-      );
-    }
+    const model = await getModelStatus('url_analyzer_v1');
+    if (!model.available) return jsonError('URL analyzer is temporarily unavailable', 503);
 
-    // Get model config
-    const modelConfig = await db.query.modelConfigs.findFirst({
-      where: eq(modelConfigs.modelId, 'url_analyzer_v1'),
-    });
+    const canSave = await ensureUser(userId);
 
-    if (!modelConfig || modelConfig.state !== 'ACTIVE') {
-      return NextResponse.json(
-        { success: false, error: 'URL analyzer model not available' },
-        { status: 503 }
-      );
-    }
-
-    // Process URLs in parallel (with rate limiting)
     const results: BatchResult[] = await Promise.all(
-      urls.map(async (url) => {
+      urls.map(async (url): Promise<BatchResult> => {
         try {
-          // Validate URL format
-          if (typeof url !== 'string' || url.trim().length === 0) {
-            return {
-              url,
-              success: false,
-              error: 'Invalid URL format',
-            };
-          }
-
-          // Perform analysis
-          const analysis = await MasterDetector.analyzeURL(url, user_id);
-
+          const analysis = await MasterDetector.analyzeURL(url, canSave ? userId : undefined);
           return {
             url,
             success: true,
+            scan_id: (analysis as { scanId?: string }).scanId ?? null,
             result: {
               confidence: analysis.confidence,
               threat_level: analysis.threatLevel,
@@ -86,93 +73,56 @@ export async function POST(request: NextRequest) {
             },
           };
         } catch (error) {
-          console.error(`Error analyzing URL ${url}:`, error);
-          return {
-            url,
-            success: false,
-            error: 'Failed to analyze URL',
-          };
+          if (isBlockedHostError(error)) {
+            return { url, success: false, error: "That address is private or internal and can't be checked." };
+          }
+          console.error('[api] batch: URL analysis failed:', error);
+          return { url, success: false, error: 'Failed to analyze URL' };
         }
       })
     );
 
-    // Calculate summary statistics
-    const successfulScans = results.filter((r) => r.success);
-    const failedScans = results.filter((r) => !r.success);
-
-    const threatDistribution = {
-      SAFE: successfulScans.filter((r) => r.result?.threat_level === 'SAFE').length,
-      LOW: successfulScans.filter((r) => r.result?.threat_level === 'LOW').length,
-      MEDIUM: successfulScans.filter((r) => r.result?.threat_level === 'MEDIUM').length,
-      HIGH: successfulScans.filter((r) => r.result?.threat_level === 'HIGH').length,
-      CRITICAL: successfulScans.filter((r) => r.result?.threat_level === 'CRITICAL').length,
-    };
-
-    const avgRiskScore =
-      successfulScans.length > 0
-        ? successfulScans.reduce((sum, r) => sum + (r.result?.risk_score || 0), 0) /
-          successfulScans.length
-        : 0;
+    const successful = results.filter(r => r.success);
+    const levels = ['SAFE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
+    const threatDistribution = Object.fromEntries(
+      levels.map(level => [level, successful.filter(r => r.result?.threat_level === level).length])
+    );
+    const avgRiskScore = successful.length
+      ? successful.reduce((sum, r) => sum + (r.result?.risk_score || 0), 0) / successful.length
+      : 0;
 
     return NextResponse.json({
       success: true,
       summary: {
         total: urls.length,
-        successful: successfulScans.length,
-        failed: failedScans.length,
+        successful: successful.length,
+        failed: results.length - successful.length,
         threat_distribution: threatDistribution,
         average_risk_score: Math.round(avgRiskScore),
       },
       results,
     });
   } catch (error) {
-    console.error('Error in batch URL analysis:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to process batch analysis' },
-      { status: 500 }
-    );
+    return serverError('POST /api/analyze/batch', error, 'Failed to process batch analysis');
   }
 }
 
-/**
- * GET endpoint to check batch analysis status
- * This can be used for async job status checking
- */
+/** GET /api/analyze/batch?job_id=<uuid> — status of one of the current session's jobs */
 export async function GET(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams;
-    const jobId = searchParams.get('job_id');
-    const userId = searchParams.get('user_id');
+    const userId = await getSessionUserId();
+    const limited = await enforceRateLimit(request, userId, 'read', LIMITS.read);
+    if (limited) return limited;
 
-    if (!jobId) {
-      return NextResponse.json(
-        { success: false, error: 'Job ID is required' },
-        { status: 400 }
-      );
-    }
+    const jobId = request.nextUrl.searchParams.get('job_id') ?? '';
+    if (!UUID_RE.test(jobId)) return jsonError('A valid job_id is required', 400);
 
-    // Find the scan job
     const scanJob = await db.query.scanJobs.findFirst({
-      where: eq(scanJobs.id, jobId),
-      with: {
-        scanResult: true,
-      },
+      where: and(eq(scanJobs.id, jobId), eq(scanJobs.userId, userId)),
+      with: { scanResult: true },
     });
 
-    if (!scanJob) {
-      return NextResponse.json(
-        { success: false, error: 'Scan job not found' },
-        { status: 404 }
-      );
-    }
-
-    // Check authorization
-    if (userId && scanJob.userId !== userId) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 403 }
-      );
-    }
+    if (!scanJob) return jsonError('Scan job not found', 404);
 
     return NextResponse.json({
       success: true,
@@ -194,14 +144,10 @@ export async function GET(request: NextRequest) {
               recommendations: scanJob.scanResult.recommendations,
             }
           : null,
-        error: scanJob.errorMessage,
+        error: scanJob.errorMessage ? 'The scan failed' : null,
       },
     });
   } catch (error) {
-    console.error('Error fetching batch job status:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch job status' },
-      { status: 500 }
-    );
+    return serverError('GET /api/analyze/batch', error, 'Failed to fetch job status');
   }
 }

@@ -9,16 +9,14 @@
  * if (!success) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 })
  */
 
-import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/db';
-import { userSettings } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import type { NextRequest } from 'next/server'
 
-// ... (keep the rest of the imports and types if any, but I'll replace the block)
-// Assuming lines 1-13 are imports
-
-// In-memory rate limit tracking (for single server)
+// In-memory rate limit tracking. NOTE: this is per server instance; on
+// serverless platforms each instance has its own counters, so limits are
+// best-effort. Use a shared store (e.g. Redis/Upstash) for strict limits.
 // Format: { key: { count: number, resetTime: number } }
+// Hard cap on tracked keys so a flood of unique identifiers can't exhaust memory.
+const MAX_TRACKED_KEYS = 50_000
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>()
 
 export interface RateLimitResult {
@@ -48,10 +46,25 @@ export async function checkRateLimit(
 
   // Get current limit data
   const limitData = rateLimitMap.get(key)
-  const resetAt = new Date(limitData?.resetTime || now + windowSeconds * 1000)
+  const resetAt =
+    limitData && now <= limitData.resetTime
+      ? new Date(limitData.resetTime)
+      : new Date(now + windowSeconds * 1000)
 
   // Check if window has expired
   if (!limitData || now > limitData.resetTime) {
+    if (!limitData && rateLimitMap.size >= MAX_TRACKED_KEYS) {
+      cleanupExpiredLimits()
+      // Still full: evict the oldest entries (Map preserves insertion order)
+      const excess = rateLimitMap.size - MAX_TRACKED_KEYS + 1
+      if (excess > 0) {
+        let removed = 0
+        for (const k of rateLimitMap.keys()) {
+          rateLimitMap.delete(k)
+          if (++removed >= excess) break
+        }
+      }
+    }
     // Start new window
     rateLimitMap.set(key, {
       count: 1,
@@ -87,43 +100,18 @@ export async function checkRateLimit(
 }
 
 /**
- * Get user's rate limit settings from database
- * Allows per-user customization of rate limits
- */
-export async function getUserRateLimit(userId: string) {
-  try {
-    const settings = await db.query.userSettings.findFirst({
-      where: eq(userSettings.userId, userId),
-    });
-
-    return {
-      limit: settings?.rateLimit || 100, // Default: 100 scans per hour
-      windowSeconds: 3600, // 1 hour
-    }
-  } catch (error) {
-    console.error('Failed to get user rate limit settings:', error)
-    return {
-      limit: 100,
-      windowSeconds: 3600,
-    }
-  }
-}
-
-/**
  * Extract user IP from request headers
  * Useful for rate limiting by IP address
  */
-export function getClientIP(request: NextRequest): string {
-  // Check various header possibilities (order matters with proxies)
-  const forwarded = request.headers.get('x-forwarded-for')
-  if (forwarded) {
-    return forwarded.split(',')[0].trim()
-  }
+export function getClientIP(request: NextRequest | Request): string {
+  // x-real-ip is set by the platform proxy (Vercel, nginx) and is not
+  // client-controlled there. The first x-forwarded-for entry is only
+  // trustworthy behind a proxy that overwrites the header (Vercel does).
+  const realIp = request.headers.get('x-real-ip')
+  if (realIp) return realIp.trim()
 
-  const ip = request.headers.get('x-real-ip')
-  if (ip) {
-    return ip
-  }
+  const forwarded = request.headers.get('x-forwarded-for')
+  if (forwarded) return forwarded.split(',')[0].trim()
 
   // Fallback — no IP available
   return 'unknown'

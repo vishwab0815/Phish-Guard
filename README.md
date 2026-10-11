@@ -17,7 +17,7 @@ PhishGuard helps identify suspicious content before a user interacts with it. Th
 - Frontend: Next.js 16, React 19, TypeScript, Tailwind CSS, Framer Motion
 - Backend: Next.js App Router API routes, Node.js
 - Database: PostgreSQL with Drizzle ORM
-- AI and Intelligence: Groq SDK, LangChain, external threat integrations
+- AI and Intelligence: Groq SDK (model set by GROQ_MODEL), Google Safe Browsing, VirusTotal, RDAP domain age
 - UI Components: Radix UI, Lucide React, Sonner
 - Testing: Jest, Testing Library, JSDOM
 
@@ -48,13 +48,16 @@ npm run build
 npm run start
 npm run lint
 npm run type-check
+npm test
 npm run db:studio
 npm run db:seed
 ```
 
 ## Notes
 
-- Use .env.local for DATABASE_URL and any optional AI or threat-intel API keys.
+- Use .env.local for DATABASE_URL, SESSION_SECRET and any optional AI or threat-intel API keys (see .env.example).
+- There are no accounts: each browser gets a signed, httpOnly session cookie, and scans/settings are private to that session. SESSION_SECRET (32+ characters) is required in production.
+- Admin-only endpoints (trusting/blocking domains, API integration test) need the `x-admin-token` header matching ADMIN_API_TOKEN; they are disabled when it isn't set.
 - The app is designed to fall back to local analysis when external services are unavailable.
 - See [docs/README.md](docs/README.md) for a more guided walkthrough of the codebase.
 

@@ -1,84 +1,59 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { scanResults } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { getSessionUserId } from '@/lib/session';
+import { enforceRateLimit, LIMITS } from '@/lib/apiGuard';
+import { jsonError, serverError, toScanDto, UUID_RE } from '../../_lib/http';
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ scanId: string }> }
-) {
+export const runtime = 'nodejs';
+
+type Params = { params: Promise<{ scanId: string }> };
+
+function ownScan(scanId: string, userId: string) {
+  return and(eq(scanResults.id, scanId), eq(scanResults.userId, userId));
+}
+
+export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { scanId } = await params;
-    const scan = await db.query.scanResults.findFirst({
-      where: eq(scanResults.id, scanId),
-    });
+    if (!UUID_RE.test(scanId)) return jsonError('Invalid scan id', 400);
 
-    if (!scan) {
-      return NextResponse.json(
-        { success: false, error: 'Scan not found' },
-        { status: 404 }
-      );
-    }
+    const userId = await getSessionUserId();
+    const limited = await enforceRateLimit(request, userId, 'read', LIMITS.read);
+    if (limited) return limited;
+
+    const scan = await db.query.scanResults.findFirst({ where: ownScan(scanId, userId) });
+    // Another user's scan is indistinguishable from a missing one.
+    if (!scan) return jsonError('Scan not found', 404);
 
     return NextResponse.json({
       success: true,
-      scan: {
-        id: scan.id,
-        type: scan.type,
-        target: scan.target,
-        result: {
-          confidence: scan.confidence,
-          threat_level: scan.threatLevel,
-          risk_score: scan.riskScore,
-          indicators: scan.indicators || [],
-          recommendations: scan.recommendations || [],
-        },
-        user_id: scan.userId,
-        timestamp: scan.timestamp?.toISOString(),
-        model_version: scan.modelVersion,
-        metadata: scan.metadata,
-      },
+      scan: { ...toScanDto(scan), metadata: scan.metadata },
     });
   } catch (error) {
-    console.error('Error fetching scan:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch scan details' },
-      { status: 500 }
-    );
+    return serverError('GET /api/scans/[scanId]', error, 'Failed to fetch scan details');
   }
 }
 
-export async function DELETE(
-  request: Request,
-  { params }: { params: Promise<{ scanId: string }> }
-) {
+export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { scanId } = await params;
+    if (!UUID_RE.test(scanId)) return jsonError('Invalid scan id', 400);
 
-    // Check if scan exists
-    const scan = await db.query.scanResults.findFirst({
-      where: eq(scanResults.id, scanId),
-    });
+    const userId = await getSessionUserId();
+    const limited = await enforceRateLimit(request, userId, 'read', LIMITS.read);
+    if (limited) return limited;
 
-    if (!scan) {
-      return NextResponse.json(
-        { success: false, error: 'Scan not found' },
-        { status: 404 }
-      );
-    }
+    const deleted = await db
+      .delete(scanResults)
+      .where(ownScan(scanId, userId))
+      .returning({ id: scanResults.id });
 
-    // Delete the scan result (cascading deletes should be handled by schema or manually)
-    await db.delete(scanResults).where(eq(scanResults.id, scanId));
+    if (deleted.length === 0) return jsonError('Scan not found', 404);
 
-    return NextResponse.json({
-      success: true,
-      message: 'Scan deleted successfully',
-    });
+    return NextResponse.json({ success: true, message: 'Scan deleted successfully' });
   } catch (error) {
-    console.error('Error deleting scan:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to delete scan' },
-      { status: 500 }
-    );
+    return serverError('DELETE /api/scans/[scanId]', error, 'Failed to delete scan');
   }
 }

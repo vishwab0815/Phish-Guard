@@ -3,14 +3,15 @@ import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "./utils";
 
+// Tailwind v3 layout: the icon is absolutely positioned and the content is indented next to it.
 const alertVariants = cva(
-  "relative w-full rounded-lg border px-4 py-3 text-sm grid has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] grid-cols-[0_1fr] has-[>svg]:gap-x-3 gap-y-0.5 items-start [&>svg]:size-4 [&>svg]:translate-y-0.5 [&>svg]:text-current",
+  "relative w-full rounded-lg border px-4 py-3 text-sm [&>svg]:absolute [&>svg]:left-4 [&>svg]:top-3.5 [&>svg]:h-4 [&>svg]:w-4 [&>svg]:text-current [&>svg~*]:pl-7",
   {
     variants: {
       variant: {
         default: "bg-card text-card-foreground",
         destructive:
-          "text-destructive bg-card [&>svg]:text-current *:data-[slot=alert-description]:text-destructive/90",
+          "border-destructive/50 bg-card text-destructive [&_[data-slot=alert-description]]:text-destructive/90",
       },
     },
     defaultVariants: {
@@ -38,10 +39,7 @@ function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="alert-title"
-      className={cn(
-        "col-start-2 line-clamp-1 min-h-4 font-medium tracking-tight",
-        className,
-      )}
+      className={cn("mb-1 font-medium leading-tight tracking-tight", className)}
       {...props}
     />
   );
@@ -55,7 +53,7 @@ function AlertDescription({
     <div
       data-slot="alert-description"
       className={cn(
-        "text-muted-foreground col-start-2 grid justify-items-start gap-1 text-sm [&_p]:leading-relaxed",
+        "grid justify-items-start gap-1 text-sm text-muted-foreground [&_p]:leading-relaxed",
         className,
       )}
       {...props}

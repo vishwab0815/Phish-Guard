@@ -1,9 +1,9 @@
 // Environment variables are loaded via --env-file flag in package.json
-import { db } from './index';
+import { db, closeDb } from './index';
 import { modelConfigs, trustedDomains, blockedDomains, threatIntelligence } from './schema';
 
 if (!process.env.DATABASE_URL) {
-  console.error('❌ ERROR: DATABASE_URL is not defined in the environment.');
+  console.error('ERROR: DATABASE_URL is not defined in the environment.');
   process.exit(1);
 }
 
@@ -97,74 +97,40 @@ const threatIntelligenceSeed = [
 ];
 
 async function main() {
-  console.log('🌱 Starting database seeding with Drizzle...');
+  console.log('Seeding database (existing rows are left untouched)...');
+  const now = new Date();
 
-  try {
-    console.log('🗑️  Cleaning up existing seed data...');
-    await db.delete(threatIntelligence);
-    await db.delete(blockedDomains);
-    await db.delete(trustedDomains);
-    await db.delete(modelConfigs);
-
-    console.log('📊 Seeding AI model configurations...');
-    const now = new Date();
-    for (const model of modelDefaults) {
-      await db.insert(modelConfigs).values({
-        id: crypto.randomUUID(),
-        ...model,
-        initializedAt: now,
-        updatedAt: now,
-      }).onConflictDoUpdate({
-        target: modelConfigs.modelId,
-        set: {
-          ...model,
-          updatedAt: now,
-        },
-      });
-      console.log(`  ✅ Created model: ${model.name}`);
-    }
-
-    console.log('🛡️  Seeding trusted domains...');
-    for (const domain of trustedDomainsSeed) {
-      await db.insert(trustedDomains).values({
-        id: crypto.randomUUID(),
-        ...domain,
-      }).onConflictDoUpdate({
-        target: trustedDomains.domain,
-        set: domain,
-      });
-    }
-
-    console.log('🚫 Seeding blocked domains...');
-    for (const domain of blockedDomainsSeed) {
-      await db.insert(blockedDomains).values({
-        id: crypto.randomUUID(),
-        ...domain,
-      }).onConflictDoUpdate({
-        target: blockedDomains.domain,
-        set: domain,
-      });
-    }
-
-    console.log('🔍 Seeding threat intelligence data...');
-    for (const intel of threatIntelligenceSeed) {
-      await db.insert(threatIntelligence).values({
-        id: crypto.randomUUID(),
-        ...intel,
-      }).onConflictDoUpdate({
-        target: threatIntelligence.domain,
-        set: intel,
-      });
-    }
-
-    console.log('\n✨ Database seeding completed successfully!');
-  } catch (error) {
-    console.error('❌ Error during seeding:', error);
-    process.exit(1);
+  console.log('Seeding model configurations...');
+  for (const model of modelDefaults) {
+    // DoNothing on conflict: re-running the seed must not reset a model an admin disabled.
+    await db.insert(modelConfigs)
+      .values({ ...model, initializedAt: now, updatedAt: now })
+      .onConflictDoNothing({ target: modelConfigs.modelId });
   }
+
+  console.log('Seeding trusted domains...');
+  for (const domain of trustedDomainsSeed) {
+    await db.insert(trustedDomains).values(domain).onConflictDoNothing({ target: trustedDomains.domain });
+  }
+
+  console.log('Seeding blocked domains...');
+  for (const domain of blockedDomainsSeed) {
+    await db.insert(blockedDomains).values(domain).onConflictDoNothing({ target: blockedDomains.domain });
+  }
+
+  console.log('Seeding threat intelligence data...');
+  for (const intel of threatIntelligenceSeed) {
+    await db.insert(threatIntelligence).values(intel).onConflictDoNothing({ target: threatIntelligence.domain });
+  }
+
+  console.log('Database seeding completed.');
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .catch((error) => {
+    console.error('Error during seeding:', error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await closeDb();
+  });

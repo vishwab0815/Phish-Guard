@@ -1,568 +1,408 @@
-interface ScanRequest {
-  type: 'url' | 'email' | 'message' | 'file';
-  target?: string;
-  url?: string;
-  content?: string;
-  headers?: any;
-  message?: string;
-  context?: any;
-  user_id?: string;
+/**
+ * Client-side API wrapper for the PhishGuard Next.js API routes.
+ *
+ * Rules (this is a security product):
+ * - Never invent results. If a request fails, throw an ApiError with a
+ *   human-readable message; the UI shows an error state with Retry.
+ * - Identity comes from the server-issued httpOnly session cookie.
+ *   Same-origin fetch sends it automatically; we never send a user id.
+ */
+
+export interface RiskBreakdownItem {
+  layer: string;
+  riskContribution: number;
+  weight: number;
+  details: string;
 }
 
-interface ScanResult {
+/** Shape of `analysis.result` as returned by the analyze routes (fields are optional on purpose). */
+export interface AnalysisResultPayload {
+  confidence?: number;
+  threat_level?: string;
+  risk_score?: number;
+  indicators?: string[];
+  recommendations?: string[];
+  riskBreakdown?: RiskBreakdownItem[];
+  risk_breakdown?: RiskBreakdownItem[];
+  scan_duration_ms?: number;
+  layers?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export interface AnalysisPayload {
+  id?: string | null;
+  /** false when the result could not be saved to history */
+  saved?: boolean;
+  type?: string;
+  target?: string;
+  result: AnalysisResultPayload;
+  timestamp?: string;
+  model_version?: string;
+  scan_duration_ms?: number;
+  layers?: Record<string, string>;
+  file?: { name?: string; size?: number; type?: string };
+  summary?: Record<string, number | undefined>;
+  [key: string]: unknown;
+}
+
+export interface AnalysisResponse {
+  success: boolean;
+  analysis: AnalysisPayload;
+}
+
+export interface StoredScan {
   id: string;
   type: string;
   target: string;
   result: {
-    confidence: number;
-    threat_level: string;
-    risk_score: number;
-    indicators: string[];
-    recommendations: string[];
+    confidence?: number;
+    threat_level?: string;
+    risk_score?: number;
+    indicators?: string[];
+    recommendations?: string[];
   };
-  timestamp: string;
-  user_id?: string;
-  model_version: string;
+  timestamp?: string;
+  model_version?: string;
 }
 
-interface ModelConfig {
-  id: string;
-  config: {
-    state: string;
-    version: string;
-    confidence_threshold: number;
-    features: string[];
-    updated_at?: string;
+export interface HealthResponse {
+  success?: boolean;
+  /** 'ok' | 'degraded' */
+  status?: string;
+  timestamp?: string;
+  models?: string[];
+  models_available?: number;
+  /** 'up' | 'down' */
+  database?: string;
+  [key: string]: unknown;
+}
+
+/** Raw stats object; every field is optional because the route is evolving. */
+export type StatsPayload = Record<string, unknown>;
+
+export interface UserSettings {
+  realTimeScanning: boolean;
+  autoQuarantine: boolean;
+  detectionSensitivity: number;
+  defaultAction: string;
+  emailAlerts: boolean;
+  desktopAlerts: boolean;
+  dailySummary: boolean;
+  dataRetentionDays: number;
+  securityLevel: string;
+}
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatResponse {
+  success: boolean;
+  response: string;
+  model?: string;
+  fallback?: boolean;
+}
+
+export interface DomainIntelResponse {
+  success: boolean;
+  domain_intelligence?: {
+    domain?: string;
+    risk_score?: number;
+    indicators?: string[];
+    whois_data?: {
+      registrar?: string;
+      createdDate?: string;
+      expiresDate?: string;
+      updatedDate?: string;
+      registrantName?: string;
+      registrantOrg?: string;
+      domainAge?: number;
+    } | null;
+    dns_data?: {
+      ipAddresses?: string[];
+      mxRecords?: string[];
+      nsRecords?: string[];
+      txtRecords?: string[];
+    } | null;
+    reputation?: {
+      isKnownPhishing?: boolean;
+      isKnownMalware?: boolean;
+      reportCount?: number;
+    } | null;
   };
+}
+
+export interface IntegrationServiceStatus {
+  configured: boolean;
+  working: boolean;
+  message: string;
+}
+
+export interface IntegrationTestResponse {
+  success: boolean;
+  summary?: { working?: number; total?: number; status?: string };
+  services?: Record<string, IntegrationServiceStatus>;
+  timestamp?: string;
+}
+
+/** Error thrown for any failed request. `message` is safe to show to the user. */
+export class ApiError extends Error {
+  status: number;
+  retryAfterSeconds?: number;
+  aborted: boolean;
+
+  constructor(message: string, status: number, opts: { retryAfterSeconds?: number; aborted?: boolean } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.retryAfterSeconds = opts.retryAfterSeconds;
+    this.aborted = opts.aborted ?? false;
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof ApiError && error.aborted) ||
+    (error instanceof DOMException && error.name === 'AbortError')
+  );
+}
+
+/** Turn any thrown value into a user-facing message. */
+export function errorMessage(error: unknown, fallback = 'Something went wrong — try again.'): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
+interface RequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+  return undefined;
 }
 
 class BackendServiceClass {
-  private baseUrl: string;
-  private headers: { [key: string]: string };
-  private backendAvailable: boolean = true; // Start optimistic
-  private lastAvailabilityCheck: number = 0;
-  private readonly RECOVERY_INTERVAL_MS = 30000; // Re-check backend every 30s
+  private readonly baseUrl = '/api';
 
-  constructor() {
-    // Use Next.js API routes (relative paths for same-origin requests)
-    this.baseUrl = '/api';
-    this.headers = {
-      'Content-Type': 'application/json',
-    };
+  private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const { timeoutMs = 15000, signal: externalSignal, headers, ...rest } = options;
 
-    // No need to test on initialization - will test on first actual request
-  }
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
 
-  private async testBackendAvailability() {
+    const isFormData = typeof FormData !== 'undefined' && rest.body instanceof FormData;
+
+    let response: Response;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
-
-      const response = await fetch(`${this.baseUrl}/health`, {
-        method: 'GET',
-        headers: this.headers,
-        signal: controller.signal
+      response = await fetch(`${this.baseUrl}${endpoint}`, {
+        ...rest,
+        credentials: 'same-origin',
+        headers: isFormData ? headers : { 'Content-Type': 'application/json', ...headers },
+        signal: controller.signal,
       });
-
+    } catch {
+      if (controller.signal.aborted && !timedOut) {
+        throw new ApiError('Request cancelled.', 0, { aborted: true });
+      }
+      if (timedOut) {
+        throw new ApiError('The scanner took too long to respond — try again.', 0);
+      }
+      throw new ApiError("Couldn't reach the scanner — check your connection and try again.", 0);
+    } finally {
       clearTimeout(timeoutId);
-
-      if (response.ok) {
-        this.backendAvailable = true;
-      } else {
-        this.backendAvailable = false;
-      }
-    } catch (error) {
-      this.backendAvailable = false;
-      // Silently fail - fallback will be used automatically
-    }
-  }
-
-  private async makeRequest(endpoint: string, options: RequestInit = {}) {
-    // If backend is known to be unavailable, periodically re-check
-    if (!this.backendAvailable) {
-      const now = Date.now();
-      if (now - this.lastAvailabilityCheck > this.RECOVERY_INTERVAL_MS) {
-        this.lastAvailabilityCheck = now;
-        await this.testBackendAvailability();
-      }
-      if (!this.backendAvailable) {
-        throw new Error('Backend service unavailable');
-      }
+      externalSignal?.removeEventListener('abort', onExternalAbort);
     }
 
+    let data: { success?: unknown; error?: unknown } | null = null;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-      const response = await fetch(`${this.baseUrl}${endpoint}`, {
-        ...options,
-        headers: {
-          ...this.headers,
-          ...options.headers
-        },
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        // Mark backend as unavailable on 500+ errors
-        if (response.status >= 500) {
-          this.backendAvailable = false;
-        }
-
-        throw new Error(`Request failed: ${response.status}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      // Mark backend as unavailable on network errors
-      if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('fetch'))) {
-        this.backendAvailable = false;
-      }
-
-      throw error;
+      const parsed: unknown = await response.json();
+      data = parsed && typeof parsed === 'object' ? (parsed as { success?: unknown; error?: unknown }) : null;
+    } catch {
+      data = null;
     }
+
+    if (response.status === 429) {
+      const retryAfter = parseRetryAfter(response.headers.get('Retry-After'));
+      throw new ApiError(
+        retryAfter !== undefined
+          ? `You're scanning too fast — try again in ${retryAfter} second${retryAfter === 1 ? '' : 's'}.`
+          : "You're scanning too fast — wait a moment and try again.",
+        429,
+        { retryAfterSeconds: retryAfter }
+      );
+    }
+
+    if (response.status === 413) {
+      throw new ApiError('That is too large to scan. Try a shorter text or a smaller file.', 413);
+    }
+
+    if (!response.ok) {
+      const serverMessage = data && typeof data.error === 'string' ? data.error : null;
+      if (response.status >= 400 && response.status < 500 && serverMessage) {
+        throw new ApiError(serverMessage, response.status);
+      }
+      if (response.status === 503) {
+        throw new ApiError(serverMessage || 'This scanner is temporarily unavailable — try again shortly.', 503);
+      }
+      throw new ApiError(
+        serverMessage
+          ? `${serverMessage}. Try again in a moment.`
+          : `The scanner hit a problem (error ${response.status}) — try again.`,
+        response.status
+      );
+    }
+
+    if (!data) {
+      throw new ApiError('The scanner sent an unreadable response — try again.', response.status);
+    }
+    if (data.success === false) {
+      throw new ApiError(typeof data.error === 'string' ? data.error : 'The request failed — try again.', response.status);
+    }
+    return data as unknown as T;
   }
 
-  // Health and Status
-  async getHealth() {
-    try {
-      // Try to re-test availability if marked as unavailable
-      if (!this.backendAvailable) {
-        await this.testBackendAvailability();
-      }
+  // ---------- Health & stats ----------
 
-      if (this.backendAvailable) {
-        return await this.makeRequest('/health');
-      } else {
-        throw new Error('Backend marked as unavailable');
-      }
-    } catch (error) {
-      // Return fallback health status silently
-      return {
-        success: false,
-        status: 'offline',
-        timestamp: new Date().toISOString(),
-        models: [],
-        error: 'Backend service unavailable'
-      };
-    }
+  getHealth(signal?: AbortSignal): Promise<HealthResponse> {
+    return this.request<HealthResponse>('/health', { signal, timeoutMs: 8000 });
   }
 
-  async getStats(userId?: string) {
-    try {
-      const query = userId ? `?user_id=${userId}` : '';
-      return await this.makeRequest(`/stats${query}`);
-    } catch (error) {
-      // Return fallback statistics silently
-      return {
-        success: true,
-        stats: {
-          total_scans: 0,
-          threats_detected: 0,
-          safe_items: 0,
-          suspicious_items: 0,
-          by_type: {
-            url: 0,
-            email: 0,
-            message: 0,
-            file: 0
-          },
-          recent_activity: 0
-        }
-      };
+  async getStats(signal?: AbortSignal): Promise<StatsPayload> {
+    const tzOffset = new Date().getTimezoneOffset();
+    const data = await this.request<{ success: boolean; stats?: StatsPayload }>(
+      `/stats?tzOffset=${encodeURIComponent(String(tzOffset))}`,
+      { signal }
+    );
+    if (!data.stats || typeof data.stats !== 'object') {
+      throw new ApiError('Statistics are unavailable right now.', 200);
     }
+    return data.stats;
   }
 
-  // Model Management
-  async getModels(): Promise<{ success: boolean; models: ModelConfig[] }> {
-    try {
-      const result = await this.makeRequest('/models');
-      return result;
-    } catch (error) {
-      // Return fallback model configuration silently
-      return {
-        success: true,
-        models: [
-          {
-            id: 'url_analyzer_v1',
-            config: {
-              state: 'active',
-              version: '1.0.0',
-              confidence_threshold: 0.7,
-              features: ['domain_analysis', 'ssl_check', 'content_scan', 'reputation_lookup']
-            }
-          },
-          {
-            id: 'email_scanner_v2',
-            config: {
-              state: 'active',
-              version: '2.0.0',
-              confidence_threshold: 0.8,
-              features: ['header_analysis', 'attachment_scan', 'content_nlp', 'sender_reputation']
-            }
-          },
-          {
-            id: 'file_detector_v1',
-            config: {
-              state: 'active',
-              version: '1.0.0',
-              confidence_threshold: 0.75,
-              features: ['file_signature', 'metadata_analysis', 'behavioral_patterns']
-            }
-          },
-          {
-            id: 'message_classifier_v1',
-            config: {
-              state: 'active',
-              version: '1.0.0',
-              confidence_threshold: 0.85,
-              features: ['nlp_analysis', 'social_engineering_detection', 'urgency_patterns']
-            }
-          }
-        ]
-      };
-    }
-  }
+  // ---------- Scanning ----------
 
-  async updateModelState(modelId: string, state: string) {
-    return this.makeRequest(`/models/${modelId}/state`, {
+  analyzeUrl(url: string, signal?: AbortSignal): Promise<AnalysisResponse> {
+    return this.request<AnalysisResponse>('/analyze/url', {
       method: 'POST',
-      body: JSON.stringify({ state })
+      body: JSON.stringify({ url }),
+      signal,
+      timeoutMs: 45000,
     });
   }
 
-  // Scanning Functions
-  async analyzeUrl(url: string, userId?: string): Promise<{ success: boolean; analysis: ScanResult }> {
-    try {
-      return await this.makeRequest('/analyze/url', {
-        method: 'POST',
-        body: JSON.stringify({ url, user_id: userId })
-      });
-    } catch (error) {
-      // Use local fallback silently
-      return this.generateLocalUrlAnalysis(url, userId);
-    }
+  /** `raw` is the full pasted email text (headers optional). */
+  analyzeEmail(raw: string, signal?: AbortSignal): Promise<AnalysisResponse> {
+    return this.request<AnalysisResponse>('/analyze/email', {
+      method: 'POST',
+      body: JSON.stringify({ raw }),
+      signal,
+      timeoutMs: 45000,
+    });
   }
 
-  async analyzeEmail(content: string, headers: any = {}, userId?: string): Promise<{ success: boolean; analysis: ScanResult }> {
-    try {
-      return await this.makeRequest('/analyze/email', {
-        method: 'POST',
-        body: JSON.stringify({ content, headers, user_id: userId })
-      });
-    } catch (error) {
-      // Use local fallback silently
-      return this.generateLocalEmailAnalysis(content, headers, userId);
-    }
+  analyzeMessage(message: string, signal?: AbortSignal): Promise<AnalysisResponse> {
+    return this.request<AnalysisResponse>('/analyze/message', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+      signal,
+      timeoutMs: 45000,
+    });
   }
 
-  async analyzeMessage(message: string, context: any = {}, userId?: string): Promise<{ success: boolean; analysis: ScanResult }> {
-    try {
-      return await this.makeRequest('/analyze/message', {
-        method: 'POST',
-        body: JSON.stringify({ message, context, user_id: userId })
-      });
-    } catch (error) {
-      // Use local fallback silently
-      return this.generateLocalMessageAnalysis(message, context, userId);
-    }
+  analyzeFile(file: File, signal?: AbortSignal): Promise<AnalysisResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.request<AnalysisResponse>('/analyze/file', {
+      method: 'POST',
+      body: formData,
+      signal,
+      timeoutMs: 120000,
+    });
   }
 
-  // Scan History
-  async getScans(userId?: string): Promise<{ success: boolean; scans: ScanResult[] }> {
-    try {
-      const query = userId ? `?user_id=${userId}` : '';
-      return await this.makeRequest(`/scans${query}`);
-    } catch (error) {
-      // Return empty array silently
-      return {
-        success: true,
-        scans: []
-      };
-    }
+  // ---------- Scan history ----------
+
+  async getScans(limit = 100, signal?: AbortSignal): Promise<StoredScan[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const data = await this.request<{ success: boolean; scans?: StoredScan[] }>(
+      `/scans?limit=${encodeURIComponent(String(safeLimit))}`,
+      { signal }
+    );
+    return Array.isArray(data.scans) ? data.scans : [];
   }
 
-  async getScanDetails(scanId: string): Promise<{ success: boolean; scan: ScanResult }> {
-    return this.makeRequest(`/scans/${scanId}`);
+  getScanDetails(scanId: string, signal?: AbortSignal): Promise<{ success: boolean; scan: StoredScan }> {
+    return this.request(`/scans/${encodeURIComponent(scanId)}`, { signal });
   }
 
-  // Utility Functions
-  formatThreatLevel(level: string): { color: string; label: string } {
-    const levels: { [key: string]: { color: string; label: string } } = {
-      'SAFE': { color: 'text-green-500', label: 'Safe' },
-      'LOW': { color: 'text-yellow-500', label: 'Low Risk' },
-      'MEDIUM': { color: 'text-orange-500', label: 'Medium Risk' },
-      'HIGH': { color: 'text-red-500', label: 'High Risk' },
-      'CRITICAL': { color: 'text-red-600', label: 'Critical' },
-      'UNKNOWN': { color: 'text-gray-500', label: 'Unknown' }
-    };
-    return levels[level] || levels['UNKNOWN'];
+  deleteScan(scanId: string): Promise<{ success: boolean }> {
+    return this.request(`/scans/${encodeURIComponent(scanId)}`, { method: 'DELETE' });
   }
 
-  formatTimestamp(timestamp: string): string {
-    return new Date(timestamp).toLocaleString();
+  // ---------- Settings ----------
+
+  async getSettings(signal?: AbortSignal): Promise<{ settings: Partial<UserSettings>; isDefault: boolean }> {
+    const data = await this.request<{ success: boolean; settings?: Partial<UserSettings>; isDefault?: boolean }>(
+      '/settings',
+      { signal }
+    );
+    return { settings: data.settings ?? {}, isDefault: Boolean(data.isDefault) };
   }
 
-  generateUserId(): string {
-    // Generate a simple session-based user ID for demo purposes
-    if (typeof window === 'undefined') {
-      // SSR context — return a temporary ID
-      return `user_ssr_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-    }
-    let userId = localStorage.getItem('phishguard_user_id');
-    if (!userId) {
-      userId = `user_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-      localStorage.setItem('phishguard_user_id', userId);
-    }
-    return userId;
+  saveSettings(settings: Partial<UserSettings>): Promise<{ success: boolean; settings?: Partial<UserSettings> }> {
+    return this.request('/settings', {
+      method: 'POST',
+      body: JSON.stringify({ settings }),
+    });
   }
 
-  // Local fallback analysis functions
-  private generateLocalUrlAnalysis(url: string, userId?: string): { success: boolean; analysis: ScanResult } {
-    const suspiciousPatterns = ['secure-', 'verify-', 'login-', 'urgent', 'suspend', 'update-'];
-    const legitimateDomains = ['google.com', 'microsoft.com', 'apple.com', 'github.com'];
-    
-    let riskScore = 0;
-    const indicators = [];
-    
-    try {
-      const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
-      const domain = urlObj.hostname.toLowerCase();
-      
-      // Check for suspicious patterns
-      if (suspiciousPatterns.some(pattern => url.toLowerCase().includes(pattern))) {
-        riskScore += 30;
-        indicators.push('Suspicious URL patterns detected');
-      }
-      
-      // Check for legitimate domains
-      if (legitimateDomains.some(legit => domain.includes(legit))) {
-        riskScore -= 20;
-        indicators.push('Legitimate domain detected');
-      }
-      
-      // Check HTTPS
-      if (!url.startsWith('https://')) {
-        riskScore += 20;
-        indicators.push('Insecure HTTP connection');
-      }
-      
-      // Check URL length
-      if (url.length > 100) {
-        riskScore += 15;
-        indicators.push('Unusually long URL');
-      }
-      
-    } catch (error) {
-      riskScore += 50;
-      indicators.push('Invalid URL format');
-    }
-    
-    const threat_level = riskScore >= 50 ? 'HIGH' : riskScore >= 30 ? 'MEDIUM' : riskScore >= 15 ? 'LOW' : 'SAFE';
-    const confidence = Math.max(60, 95 - Math.floor(riskScore / 3));
-    
-    return {
-      success: true,
-      analysis: {
-        id: crypto.randomUUID(),
-        type: 'url',
-        target: url,
-        result: {
-          confidence,
-          threat_level,
-          risk_score: Math.min(95, riskScore),
-          indicators,
-          recommendations: this.generateRecommendations(threat_level)
-        },
-        timestamp: new Date().toISOString(),
-        user_id: userId,
-        model_version: 'local-fallback-1.0'
-      }
-    };
+  // ---------- Admin ----------
+
+  /** Admin-only integration check. The token is sent once and never stored. */
+  testIntegrations(adminToken: string, signal?: AbortSignal): Promise<IntegrationTestResponse> {
+    return this.request<IntegrationTestResponse>('/test-apis', {
+      headers: { 'x-admin-token': adminToken },
+      signal,
+      timeoutMs: 45000,
+    });
   }
 
-  private generateLocalEmailAnalysis(content: string, headers: any, userId?: string): { success: boolean; analysis: ScanResult } {
-    const suspiciousKeywords = ['urgent', 'verify', 'suspend', 'expire', 'winner', 'congratulations', 'claim', 'prize'];
-    let riskScore = 0;
-    const indicators = [];
-    
-    const lowerContent = content.toLowerCase();
-    const keywordMatches = suspiciousKeywords.filter(keyword => lowerContent.includes(keyword));
-    
-    if (keywordMatches.length > 0) {
-      riskScore += keywordMatches.length * 15;
-      indicators.push(`Suspicious keywords: ${keywordMatches.join(', ')}`);
-    }
-    
-    // Check for links
-    const urlMatches = content.match(/https?:\/\/[^\s]+/gi) || [];
-    if (urlMatches.length > 3) {
-      riskScore += 20;
-      indicators.push('Multiple links detected');
-    }
-    
-    // Check for generic greetings
-    if (lowerContent.includes('dear customer') || lowerContent.includes('dear sir/madam')) {
-      riskScore += 15;
-      indicators.push('Generic greeting detected');
-    }
-    
-    const threat_level = riskScore >= 45 ? 'HIGH' : riskScore >= 25 ? 'MEDIUM' : riskScore >= 10 ? 'LOW' : 'SAFE';
-    const confidence = Math.max(65, 92 - Math.floor(riskScore / 4));
-    
-    return {
-      success: true,
-      analysis: {
-        id: crypto.randomUUID(),
-        type: 'email',
-        target: content.substring(0, 50) + '...',
-        result: {
-          confidence,
-          threat_level,
-          risk_score: Math.min(90, riskScore),
-          indicators,
-          recommendations: this.generateRecommendations(threat_level)
-        },
-        timestamp: new Date().toISOString(),
-        user_id: userId,
-        model_version: 'local-fallback-1.0'
-      }
-    };
+  // ---------- AI assistant & threat intel ----------
+
+  chat(message: string, context: ChatTurn[], signal?: AbortSignal): Promise<ChatResponse> {
+    return this.request<ChatResponse>('/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, context }),
+      signal,
+      timeoutMs: 45000,
+    });
   }
 
-  private generateLocalMessageAnalysis(message: string, context: any, userId?: string): { success: boolean; analysis: ScanResult } {
-    const socialEngineeringPatterns = ['urgent', 'click here', 'verify account', 'suspended', 'expire', 'immediate'];
-    let riskScore = 0;
-    const indicators = [];
-    
-    const lowerMessage = message.toLowerCase();
-    const patternMatches = socialEngineeringPatterns.filter(pattern => lowerMessage.includes(pattern));
-    
-    if (patternMatches.length > 0) {
-      riskScore += patternMatches.length * 12;
-      indicators.push(`Social engineering patterns: ${patternMatches.join(', ')}`);
-    }
-    
-    // Check for financial terms
-    const financialTerms = ['money', 'payment', 'bank', 'card', 'transfer'];
-    const financialMatches = financialTerms.filter(term => lowerMessage.includes(term));
-    
-    if (financialMatches.length > 0) {
-      riskScore += 25;
-      indicators.push('Financial information request');
-    }
-    
-    const threat_level = riskScore >= 40 ? 'HIGH' : riskScore >= 25 ? 'MEDIUM' : riskScore >= 10 ? 'LOW' : 'SAFE';
-    const confidence = Math.max(70, 90 - Math.floor(riskScore / 3));
-    
-    return {
-      success: true,
-      analysis: {
-        id: crypto.randomUUID(),
-        type: 'message',
-        target: message.substring(0, 50) + '...',
-        result: {
-          confidence,
-          threat_level,
-          risk_score: Math.min(85, riskScore),
-          indicators,
-          recommendations: this.generateRecommendations(threat_level)
-        },
-        timestamp: new Date().toISOString(),
-        user_id: userId,
-        model_version: 'local-fallback-1.0'
-      }
-    };
-  }
-
-  private generateRecommendations(threat_level: string): string[] {
-    const recommendations: { [key: string]: string[] } = {
-      'HIGH': [
-        'IMMEDIATE ACTION: Do not interact with this content',
-        'Report to security team immediately',
-        'Block sender if applicable',
-        'Change passwords if compromised'
-      ],
-      'MEDIUM': [
-        'Exercise extreme caution',
-        'Verify through official channels',
-        'Do not click links or provide information',
-        'Monitor for suspicious activity'
-      ],
-      'LOW': [
-        'Proceed with caution',
-        'Verify sender authenticity',
-        'Double-check any requests',
-        'Report if suspicious'
-      ],
-      'SAFE': [
-        'Content appears legitimate',
-        'Continue with normal security practices',
-        'Monitor for any changes',
-        'Stay vigilant'
-      ]
-    };
-
-    return recommendations[threat_level] || recommendations['SAFE'];
-  }
-
-  // ==========================================
-  // Settings API Methods
-  // ==========================================
-
-  async getSettings(userId?: string): Promise<any> {
-    try {
-      const uid = userId || this.generateUserId();
-      return await this.makeRequest(`/settings?user_id=${uid}`);
-    } catch {
-      return {
-        success: true,
-        settings: {
-          realTimeScanning: true,
-          autoQuarantine: false,
-          detectionSensitivity: 75,
-          defaultAction: 'warn',
-          emailAlerts: true,
-          desktopAlerts: true,
-          dailySummary: false,
-          securityLevel: 'medium',
-          dataRetentionDays: 30,
-        },
-        isDefault: true,
-      };
-    }
-  }
-
-  async saveSettings(settings: any, userId?: string): Promise<any> {
-    try {
-      const uid = userId || this.generateUserId();
-      return await this.makeRequest('/settings', {
-        method: 'POST',
-        body: JSON.stringify({ user_id: uid, settings }),
-      });
-    } catch (error) {
-      console.error('Failed to save settings:', error);
-      return { success: false, error: 'Failed to save settings' };
-    }
-  }
-
-  // ==========================================
-  // Scan Deletion
-  // ==========================================
-
-  async deleteScan(scanId: string): Promise<any> {
-    try {
-      return await this.makeRequest(`/scans/${scanId}`, {
-        method: 'DELETE',
-      });
-    } catch (error) {
-      console.error('Failed to delete scan:', error);
-      return { success: false, error: 'Failed to delete scan' };
-    }
+  domainIntel(domain: string, signal?: AbortSignal): Promise<DomainIntelResponse> {
+    return this.request<DomainIntelResponse>('/threat-intel/domain', {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+      signal,
+      timeoutMs: 30000,
+    });
   }
 }
 
 export const BackendService = new BackendServiceClass();
-export type { ScanResult, ModelConfig, ScanRequest };
+export type BackendServiceType = BackendServiceClass;

@@ -4,21 +4,49 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isIP } from 'net';
+import { z } from 'zod';
 import { IPService } from '@/services/detection/ipService';
+import { isNonPublicIp } from '@/lib/netGuard';
+import { getSessionUserId } from '@/lib/session';
+import { enforceRateLimit, LIMITS, parseJson } from '@/lib/apiGuard';
+import {
+  isBlockedHostError,
+  jsonError,
+  PRIVATE_TARGET_MESSAGE,
+  rejectIfTooLarge,
+  serverError,
+  threatLevelFromScore,
+} from '../../_lib/http';
 
+export const runtime = 'nodejs';
+
+const INVALID_IP = 'Please enter a valid IPv4 or IPv6 address';
+
+function cleanIp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const ip = value.trim().replace(/^\[|\]$/g, '');
+  return ip.length <= 64 && isIP(ip) ? ip : null;
+}
+
+/** POST /api/threat-intel/ip — body `{ ip_address }` */
 export async function POST(request: NextRequest) {
   try {
-    const { ip_address } = await request.json();
+    const tooLarge = rejectIfTooLarge(request, 8 * 1024);
+    if (tooLarge) return tooLarge;
 
-    if (!ip_address || typeof ip_address !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'Invalid IP address provided' },
-        { status: 400 }
-      );
-    }
+    const userId = await getSessionUserId();
+    const limited = await enforceRateLimit(request, userId, 'threat-intel', LIMITS.threatIntel);
+    if (limited) return limited;
 
-    // Analyze IP
-    const analysis = await IPService.analyze(ip_address);
+    const parsed = await parseJson(request, z.object({ ip_address: z.string().max(64) }));
+    if (parsed.error) return parsed.error;
+
+    const ip = cleanIp(parsed.data.ip_address);
+    if (!ip) return jsonError(INVALID_IP, 400);
+    if (isNonPublicIp(ip)) return jsonError(PRIVATE_TARGET_MESSAGE, 400);
+
+    const analysis = await IPService.analyze(ip);
 
     return NextResponse.json({
       success: true,
@@ -32,61 +60,34 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Error analyzing IP:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to analyze IP address' },
-      { status: 500 }
-    );
+    if (isBlockedHostError(error)) return jsonError(PRIVATE_TARGET_MESSAGE, 400);
+    return serverError('POST /api/threat-intel/ip', error, 'Failed to analyze IP address');
   }
 }
 
-/**
- * GET endpoint to quickly check if IP is valid and safe
- */
+/** GET /api/threat-intel/ip?ip=1.2.3.4 — quick check */
 export async function GET(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams;
-    const ipAddress = searchParams.get('ip');
+    const userId = await getSessionUserId();
+    const limited = await enforceRateLimit(request, userId, 'threat-intel', LIMITS.threatIntel);
+    if (limited) return limited;
 
-    if (!ipAddress) {
-      return NextResponse.json(
-        { success: false, error: 'IP address parameter is required' },
-        { status: 400 }
-      );
-    }
+    const ip = cleanIp(request.nextUrl.searchParams.get('ip'));
+    if (!ip) return jsonError(INVALID_IP, 400);
 
-    // Quick validation
-    const isPrivate = IPService.isPrivateIP(ipAddress);
-
-    // Get analysis if not private
-    let analysis = null;
-    if (!isPrivate) {
-      analysis = await IPService.analyze(ipAddress);
-    }
+    const isPrivate = isNonPublicIp(ip);
+    const analysis = isPrivate ? null : await IPService.analyze(ip);
 
     return NextResponse.json({
       success: true,
-      ip_address: ipAddress,
+      ip_address: ip,
       is_private: isPrivate,
       is_safe: analysis ? analysis.riskScore < 40 : true,
       risk_score: analysis?.riskScore || 0,
-      threat_level: analysis
-        ? analysis.riskScore >= 80
-          ? 'CRITICAL'
-          : analysis.riskScore >= 60
-          ? 'HIGH'
-          : analysis.riskScore >= 40
-          ? 'MEDIUM'
-          : analysis.riskScore >= 20
-          ? 'LOW'
-          : 'SAFE'
-        : 'SAFE',
+      threat_level: analysis ? threatLevelFromScore(analysis.riskScore) : 'SAFE',
     });
   } catch (error) {
-    console.error('Error checking IP:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to check IP address' },
-      { status: 500 }
-    );
+    if (isBlockedHostError(error)) return jsonError(PRIVATE_TARGET_MESSAGE, 400);
+    return serverError('GET /api/threat-intel/ip', error, 'Failed to check IP address');
   }
 }

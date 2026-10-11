@@ -3,8 +3,13 @@
  * Checks URLs against Google's threat intelligence database
  */
 
+import { URLAnalyzer } from '../detection/urlAnalyzer';
+
+const REQUEST_TIMEOUT_MS = 4000;
+
 export interface SafeBrowsingResult {
   isThreat: boolean;
+  checked?: boolean; // true only when Google actually answered (key configured, no error)
   threatType?: 'MALWARE' | 'SOCIAL_ENGINEERING' | 'UNWANTED_SOFTWARE' | 'POTENTIALLY_HARMFUL_APPLICATION';
   platformType?: string;
   threatEntryType?: string;
@@ -13,7 +18,9 @@ export interface SafeBrowsingResult {
 
 export class GoogleSafeBrowsingService {
   private static readonly API_BASE_URL = 'https://safebrowsing.googleapis.com/v4/threatMatches:find';
-  private static readonly API_KEY = process.env.GOOGLE_SAFE_BROWSING_API_KEY || '';
+  private static get API_KEY(): string {
+    return process.env.GOOGLE_SAFE_BROWSING_API_KEY || '';
+  }
 
   /**
    * Check URL against Safe Browsing database
@@ -21,16 +28,20 @@ export class GoogleSafeBrowsingService {
   static async checkURL(url: string): Promise<SafeBrowsingResult> {
     // Check if API key is configured
     if (!this.API_KEY) {
-      console.warn('Google Safe Browsing API key not configured');
-      return { isThreat: false };
+      return { isThreat: false, checked: false };
+    }
+
+    // Never send private/internal URLs to a third party
+    if (!URLAnalyzer.isPublicWebUrl(url)) {
+      return { isThreat: false, checked: false };
     }
 
     try {
       const response = await this.queryAPI(url);
-      return this.parseResponse(response);
+      return { ...this.parseResponse(response), checked: true };
     } catch (error) {
       console.error('Google Safe Browsing API error:', error);
-      return { isThreat: false };
+      return { isThreat: false, checked: false };
     }
   }
 
@@ -62,6 +73,7 @@ export class GoogleSafeBrowsingService {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -97,8 +109,12 @@ export class GoogleSafeBrowsingService {
    */
   static async checkURLs(urls: string[]): Promise<Map<string, SafeBrowsingResult>> {
     if (!this.API_KEY) {
-      console.warn('Google Safe Browsing API key not configured');
-      return new Map(urls.map(url => [url, { isThreat: false }]));
+      return new Map(urls.map(url => [url, { isThreat: false, checked: false }]));
+    }
+
+    const publicUrls = urls.filter(url => URLAnalyzer.isPublicWebUrl(url));
+    if (publicUrls.length === 0) {
+      return new Map(urls.map(url => [url, { isThreat: false, checked: false }]));
     }
 
     try {
@@ -116,7 +132,7 @@ export class GoogleSafeBrowsingService {
           ],
           platformTypes: ['ANY_PLATFORM'],
           threatEntryTypes: ['URL'],
-          threatEntries: urls.map(url => ({ url })),
+          threatEntries: publicUrls.map(url => ({ url })),
         },
       };
 
@@ -126,6 +142,7 @@ export class GoogleSafeBrowsingService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -137,9 +154,9 @@ export class GoogleSafeBrowsingService {
       // Build results map
       const results = new Map<string, SafeBrowsingResult>();
 
-      // Initialize all URLs as safe
+      // Initialize: public URLs were checked, private ones were not sent
       urls.forEach(url => {
-        results.set(url, { isThreat: false });
+        results.set(url, { isThreat: false, checked: publicUrls.includes(url) });
       });
 
       // Update with threat matches
@@ -148,6 +165,7 @@ export class GoogleSafeBrowsingService {
           const url = match.threat.url;
           results.set(url, {
             isThreat: true,
+            checked: true,
             threatType: match.threatType,
             platformType: match.platformType,
             threatEntryType: match.threatEntryType,
@@ -159,7 +177,7 @@ export class GoogleSafeBrowsingService {
       return results;
     } catch (error) {
       console.error('Google Safe Browsing batch API error:', error);
-      return new Map(urls.map(url => [url, { isThreat: false }]));
+      return new Map(urls.map(url => [url, { isThreat: false, checked: false }]));
     }
   }
 
