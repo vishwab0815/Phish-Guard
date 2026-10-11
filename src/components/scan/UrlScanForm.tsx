@@ -34,14 +34,14 @@ export function UrlScanForm({ value, onChange, onSubmit, disabled }: UrlScanForm
           placeholder="https://example.com or suspicious-site.com"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="bg-input-background backdrop-blur-sm"
+          className="h-11 bg-background/70 dark:bg-background/40"
           aria-describedby="url-help"
         />
         <p id="url-help" className="text-xs text-muted-foreground">
           Paste the link exactly as you received it. We check the link itself — we don&apos;t open it in your browser.
         </p>
       </div>
-      <Button type="submit" disabled={!value.trim() || disabled} className="w-full security-button">
+      <Button type="submit" disabled={!value.trim() || disabled} className="w-full h-11 text-base text-white security-button">
         <Zap className="w-4 h-4 mr-2" aria-hidden="true" />
         {disabled ? "Checking link…" : "Check this link"}
       </Button>

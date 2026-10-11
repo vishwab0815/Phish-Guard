@@ -31,14 +31,14 @@ export function EmailScanForm({ value, onChange, onSubmit, disabled }: EmailScan
           value={value}
           onChange={(e) => onChange(e.target.value)}
           rows={10}
-          className="bg-input-background backdrop-blur-sm font-mono text-sm"
+          className="bg-background/70 dark:bg-background/40 font-mono text-sm"
           aria-describedby="email-help"
         />
         <p id="email-help" className="text-xs text-muted-foreground">
           Headers are optional but help us check whether the sender is genuine (SPF/DKIM/DMARC).
         </p>
       </div>
-      <Button type="submit" disabled={!value.trim() || disabled} className="w-full security-button">
+      <Button type="submit" disabled={!value.trim() || disabled} className="w-full h-11 text-base text-white security-button">
         <Eye className="w-4 h-4 mr-2" aria-hidden="true" />
         {disabled ? "Checking email…" : "Check this email"}
       </Button>

@@ -6,9 +6,28 @@ import { Toaster } from '@/components/ui/sonner'
 
 const outfit = Outfit({ subsets: ['latin'] })
 
+const SITE_TITLE = 'PhishGuard — Check suspicious links, SMS and emails'
+const SITE_DESCRIPTION =
+  'Free scam checker for India. Paste a suspicious link, SMS, WhatsApp message, email or file and get a plain-language verdict and what to do next. No sign-up, nothing stored on our servers.'
+
 export const metadata: Metadata = {
-  title: 'PhishGuard - AI-Powered Phishing Detection',
-  description: 'Advanced phishing detection application powered by AI to protect your digital environment',
+  metadataBase: new URL('https://phishguard-in.vercel.app'),
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  applicationName: 'PhishGuard',
+  openGraph: {
+    type: 'website',
+    url: '/',
+    siteName: 'PhishGuard',
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    locale: 'en_IN',
+  },
+  twitter: {
+    card: 'summary',
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
   icons: {
     icon: '/favicon.ico',
   },

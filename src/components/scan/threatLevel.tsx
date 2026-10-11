@@ -32,6 +32,10 @@ interface ThreatMeta {
   textClass: string;
   /** Tinted panel (border + background) for verdict boxes. */
   panelClass: string;
+  /** SVG stroke colour for gauges. */
+  strokeClass: string;
+  /** Solid fill for bars/dots. */
+  fillClass: string;
   Icon: ComponentType<{ className?: string }>;
   rank: number;
 }
@@ -42,6 +46,8 @@ export const THREAT_META: Record<ThreatLevel, ThreatMeta> = {
     badgeClass: "bg-red-700 text-white border-red-900 dark:bg-red-700 dark:text-white",
     textClass: "text-red-700 dark:text-red-400",
     panelClass: "border-red-700 bg-red-100 dark:bg-red-950/50 dark:border-red-600",
+    strokeClass: "stroke-red-700 dark:stroke-red-500",
+    fillClass: "bg-red-700 dark:bg-red-500",
     Icon: XOctagon,
     rank: 5,
   },
@@ -50,6 +56,8 @@ export const THREAT_META: Record<ThreatLevel, ThreatMeta> = {
     badgeClass: "bg-red-600 text-white border-red-700 dark:bg-red-600",
     textClass: "text-red-600 dark:text-red-400",
     panelClass: "border-red-500 bg-red-50 dark:bg-red-950/30",
+    strokeClass: "stroke-red-500 dark:stroke-red-400",
+    fillClass: "bg-red-500 dark:bg-red-400",
     Icon: ShieldAlert,
     rank: 4,
   },
@@ -58,6 +66,8 @@ export const THREAT_META: Record<ThreatLevel, ThreatMeta> = {
     badgeClass: "bg-orange-500 text-white border-orange-600",
     textClass: "text-orange-600 dark:text-orange-400",
     panelClass: "border-orange-500 bg-orange-50 dark:bg-orange-950/30",
+    strokeClass: "stroke-orange-500 dark:stroke-orange-400",
+    fillClass: "bg-orange-500 dark:bg-orange-400",
     Icon: AlertTriangle,
     rank: 3,
   },
@@ -66,6 +76,8 @@ export const THREAT_META: Record<ThreatLevel, ThreatMeta> = {
     badgeClass: "bg-yellow-400 text-yellow-950 border-yellow-500",
     textClass: "text-yellow-700 dark:text-yellow-400",
     panelClass: "border-yellow-500 bg-yellow-50 dark:bg-yellow-950/30",
+    strokeClass: "stroke-yellow-500 dark:stroke-yellow-400",
+    fillClass: "bg-yellow-400 dark:bg-yellow-400",
     Icon: Shield,
     rank: 2,
   },
@@ -74,6 +86,8 @@ export const THREAT_META: Record<ThreatLevel, ThreatMeta> = {
     badgeClass: "bg-green-600 text-white border-green-700",
     textClass: "text-green-700 dark:text-green-400",
     panelClass: "border-green-600 bg-green-50 dark:bg-green-950/30",
+    strokeClass: "stroke-green-600 dark:stroke-green-500",
+    fillClass: "bg-green-600 dark:bg-green-500",
     Icon: CheckCircle,
     rank: 1,
   },
@@ -82,6 +96,8 @@ export const THREAT_META: Record<ThreatLevel, ThreatMeta> = {
     badgeClass: "bg-muted text-muted-foreground border-border",
     textClass: "text-muted-foreground",
     panelClass: "border-border bg-muted/40",
+    strokeClass: "stroke-slate-400 dark:stroke-slate-500",
+    fillClass: "bg-slate-400 dark:bg-slate-500",
     Icon: HelpCircle,
     rank: 0,
   },

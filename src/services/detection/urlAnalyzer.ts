@@ -342,7 +342,7 @@ export class URLAnalyzer {
     // ---- TLD risk ----
     const tldRisk = hasIPAddress ? 'low' : this.checkTLDRisk(bareHost);
     if (tldRisk === 'high') {
-      indicators.push('high-risk top-level domain');
+      indicators.push(`Uses the .${bareHost.split('.').pop()} web address ending, which is common in scam sites`);
       riskScore += 20;
     } else if (tldRisk === 'medium') {
       indicators.push('medium-risk top-level domain');

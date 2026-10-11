@@ -31,8 +31,8 @@ export function FileScanForm({ file, onFileChange, onSubmit, disabled }: FileSca
 
   return (
     <div
-      className={`border-2 border-dashed rounded-lg p-8 text-center glass-effect transition-all ${
-        isDragging ? "border-blue-500 bg-blue-50 dark:bg-blue-950/20" : "border-border/50"
+      className={`border-2 border-dashed rounded-xl p-6 sm:p-8 text-center transition-colors ${
+        isDragging ? "border-blue-500 bg-blue-50 dark:bg-blue-950/20" : "border-border bg-muted/30"
       }`}
       onDragOver={(e) => {
         e.preventDefault();
@@ -55,10 +55,10 @@ export function FileScanForm({ file, onFileChange, onSubmit, disabled }: FileSca
 
       {file ? (
         <div className="space-y-3">
-          <div className="bg-card/50 backdrop-blur-sm rounded-lg p-4 max-w-md mx-auto">
+          <div className="bg-card border border-border rounded-lg p-4 max-w-md mx-auto">
             <div className="flex items-start gap-3">
               <FileText className="w-5 h-5 text-blue-500 mt-1" aria-hidden="true" />
-              <div className="flex-1 text-left">
+              <div className="flex-1 min-w-0 text-left">
                 <p className="font-medium break-all">{file.name}</p>
                 <p className="text-sm text-muted-foreground">Size: {formatSize(file.size)}</p>
                 <p className="text-sm text-muted-foreground">Type: {file.type || "Unknown"}</p>
@@ -76,7 +76,12 @@ export function FileScanForm({ file, onFileChange, onSubmit, disabled }: FileSca
             </p>
           )}
           <div className="flex gap-2 justify-center">
-            <Button onClick={onSubmit} disabled={disabled || tooLarge || empty} className="security-button">
+            <Button
+              id="file-choose"
+              onClick={onSubmit}
+              disabled={disabled || tooLarge || empty}
+              className="text-white security-button"
+            >
               <Shield className="w-4 h-4 mr-2" aria-hidden="true" />
               {disabled ? "Checking file…" : "Check this file"}
             </Button>
@@ -96,8 +101,8 @@ export function FileScanForm({ file, onFileChange, onSubmit, disabled }: FileSca
             Drop a file here or choose one (max 100 MB).
           </p>
           <Button
-            variant="outline"
-            className="security-button"
+            id="file-choose"
+            className="text-white security-button"
             onClick={() => inputRef.current?.click()}
             disabled={disabled}
           >

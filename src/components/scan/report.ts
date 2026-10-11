@@ -1,5 +1,12 @@
 import type { AnalysisResponse, RiskBreakdownItem } from "@/utils/BackendService";
-import { normalizeThreatLevel, type ScanKind, type ThreatLevel, THREAT_META } from "./threatLevel";
+import {
+  INDIA_EMERGENCY_STEPS,
+  isDangerous,
+  normalizeThreatLevel,
+  type ScanKind,
+  type ThreatLevel,
+  THREAT_META,
+} from "./threatLevel";
 
 /** Normalised scan result used by the UI. Only contains data the backend actually returned. */
 export interface ScanReport {
@@ -18,8 +25,6 @@ export interface ScanReport {
   durationMs: number | null;
   modelVersion: string | null;
   scannedAt: string | null;
-  /** false when the backend said the result was not saved to history; null if unknown. */
-  saved: boolean | null;
   /** Extra real fields returned by the backend (e.g. SPF/DKIM results, file info). */
   details: { label: string; value: string }[];
 }
@@ -131,7 +136,6 @@ export function normalizeAnalysis(kind: ScanKind, response: AnalysisResponse, ta
     durationMs: num(result.scan_duration_ms) ?? num(analysis.scan_duration_ms),
     modelVersion: typeof analysis.model_version === "string" ? analysis.model_version : null,
     scannedAt: typeof analysis.timestamp === "string" ? analysis.timestamp : null,
-    saved: typeof analysis.saved === "boolean" ? analysis.saved : null,
     details,
   };
 }
@@ -148,6 +152,10 @@ export function reportToText(report: ScanReport, verdict: string): string {
     `Confidence: ${report.confidence !== null ? `${report.confidence}%` : "Not available"}`,
   ];
   if (report.scannedAt) lines.push(`Scanned at: ${new Date(report.scannedAt).toLocaleString()}`);
+  if (isDangerous(report.level)) {
+    lines.push("", "Already clicked, entered details or paid? (India)");
+    INDIA_EMERGENCY_STEPS.forEach((s) => lines.push(`- ${s}`));
+  }
   if (report.recommendations.length) {
     lines.push("", "What to do:");
     report.recommendations.forEach((r) => lines.push(`- ${r}`));
@@ -156,5 +164,6 @@ export function reportToText(report: ScanReport, verdict: string): string {
     lines.push("", "Findings:");
     report.indicators.forEach((i) => lines.push(`- ${i}`));
   }
+  lines.push("", "Checked with PhishGuard (demo). Results are guidance, not a guarantee.");
   return lines.join("\n");
 }

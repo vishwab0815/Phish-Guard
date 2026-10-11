@@ -41,7 +41,7 @@ describe('URLAnalyzer', () => {
 
     it('should detect high-risk TLDs', async () => {
       const result = await URLAnalyzer.analyze('https://phishing-site.tk')
-      expect(result.indicators.some(i => i.includes('high-risk') || i.includes('TLD'))).toBe(true)
+      expect(result.indicators.some(i => i.includes('.tk web address ending'))).toBe(true)
       expect(result.riskScore).toBeGreaterThan(10)
     })
 

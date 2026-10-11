@@ -1,6 +1,9 @@
 /**
  * Client-side API wrapper for the PhishGuard Next.js API routes.
  *
+ * Demo build: there is no server-side history, stats or settings — scan
+ * history lives in the browser (see src/lib/localHistory.ts).
+ *
  * Rules (this is a security product):
  * - Never invent results. If a request fails, throw an ApiError with a
  *   human-readable message; the UI shows an error state with Retry.
@@ -31,8 +34,6 @@ export interface AnalysisResultPayload {
 
 export interface AnalysisPayload {
   id?: string | null;
-  /** false when the result could not be saved to history */
-  saved?: boolean;
   type?: string;
   target?: string;
   result: AnalysisResultPayload;
@@ -50,24 +51,9 @@ export interface AnalysisResponse {
   analysis: AnalysisPayload;
 }
 
-export interface StoredScan {
-  id: string;
-  type: string;
-  target: string;
-  result: {
-    confidence?: number;
-    threat_level?: string;
-    risk_score?: number;
-    indicators?: string[];
-    recommendations?: string[];
-  };
-  timestamp?: string;
-  model_version?: string;
-}
-
 export interface HealthResponse {
   success?: boolean;
-  /** 'ok' | 'degraded' */
+  /** 'ok' | 'degraded' — both mean the scanner is reachable ('degraded' only means no database, expected in the demo). */
   status?: string;
   timestamp?: string;
   models?: string[];
@@ -75,21 +61,6 @@ export interface HealthResponse {
   /** 'up' | 'down' */
   database?: string;
   [key: string]: unknown;
-}
-
-/** Raw stats object; every field is optional because the route is evolving. */
-export type StatsPayload = Record<string, unknown>;
-
-export interface UserSettings {
-  realTimeScanning: boolean;
-  autoQuarantine: boolean;
-  detectionSensitivity: number;
-  defaultAction: string;
-  emailAlerts: boolean;
-  desktopAlerts: boolean;
-  dailySummary: boolean;
-  dataRetentionDays: number;
-  securityLevel: string;
 }
 
 export interface ChatTurn {
@@ -131,19 +102,6 @@ export interface DomainIntelResponse {
       reportCount?: number;
     } | null;
   };
-}
-
-export interface IntegrationServiceStatus {
-  configured: boolean;
-  working: boolean;
-  message: string;
-}
-
-export interface IntegrationTestResponse {
-  success: boolean;
-  summary?: { working?: number; total?: number; status?: string };
-  services?: Record<string, IntegrationServiceStatus>;
-  timestamp?: string;
 }
 
 /** Error thrown for any failed request. `message` is safe to show to the user. */
@@ -277,22 +235,10 @@ class BackendServiceClass {
     return data as unknown as T;
   }
 
-  // ---------- Health & stats ----------
+  // ---------- Health ----------
 
   getHealth(signal?: AbortSignal): Promise<HealthResponse> {
     return this.request<HealthResponse>('/health', { signal, timeoutMs: 8000 });
-  }
-
-  async getStats(signal?: AbortSignal): Promise<StatsPayload> {
-    const tzOffset = new Date().getTimezoneOffset();
-    const data = await this.request<{ success: boolean; stats?: StatsPayload }>(
-      `/stats?tzOffset=${encodeURIComponent(String(tzOffset))}`,
-      { signal }
-    );
-    if (!data.stats || typeof data.stats !== 'object') {
-      throw new ApiError('Statistics are unavailable right now.', 200);
-    }
-    return data.stats;
   }
 
   // ---------- Scanning ----------
@@ -333,53 +279,6 @@ class BackendServiceClass {
       body: formData,
       signal,
       timeoutMs: 120000,
-    });
-  }
-
-  // ---------- Scan history ----------
-
-  async getScans(limit = 100, signal?: AbortSignal): Promise<StoredScan[]> {
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
-    const data = await this.request<{ success: boolean; scans?: StoredScan[] }>(
-      `/scans?limit=${encodeURIComponent(String(safeLimit))}`,
-      { signal }
-    );
-    return Array.isArray(data.scans) ? data.scans : [];
-  }
-
-  getScanDetails(scanId: string, signal?: AbortSignal): Promise<{ success: boolean; scan: StoredScan }> {
-    return this.request(`/scans/${encodeURIComponent(scanId)}`, { signal });
-  }
-
-  deleteScan(scanId: string): Promise<{ success: boolean }> {
-    return this.request(`/scans/${encodeURIComponent(scanId)}`, { method: 'DELETE' });
-  }
-
-  // ---------- Settings ----------
-
-  async getSettings(signal?: AbortSignal): Promise<{ settings: Partial<UserSettings>; isDefault: boolean }> {
-    const data = await this.request<{ success: boolean; settings?: Partial<UserSettings>; isDefault?: boolean }>(
-      '/settings',
-      { signal }
-    );
-    return { settings: data.settings ?? {}, isDefault: Boolean(data.isDefault) };
-  }
-
-  saveSettings(settings: Partial<UserSettings>): Promise<{ success: boolean; settings?: Partial<UserSettings> }> {
-    return this.request('/settings', {
-      method: 'POST',
-      body: JSON.stringify({ settings }),
-    });
-  }
-
-  // ---------- Admin ----------
-
-  /** Admin-only integration check. The token is sent once and never stored. */
-  testIntegrations(adminToken: string, signal?: AbortSignal): Promise<IntegrationTestResponse> {
-    return this.request<IntegrationTestResponse>('/test-apis', {
-      headers: { 'x-admin-token': adminToken },
-      signal,
-      timeoutMs: 45000,
     });
   }
 

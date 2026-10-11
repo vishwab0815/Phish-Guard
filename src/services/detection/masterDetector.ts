@@ -390,8 +390,17 @@ export class MasterDetector {
   }
 
   private static generateRecommendations(riskScore: number, ctx: { trusted: boolean; feedsConsulted: number }): string[] {
-    if (riskScore >= 50) return ['DO NOT visit this URL', 'Do not enter passwords, OTPs or payment details', 'Block this domain in your firewall'];
-    if (riskScore >= 15) return ['Exercise caution', 'Verify the sender', 'Open the official site directly instead of using this link'];
+    if (riskScore >= 50) return [
+      "Don't open this link, and don't forward it to others",
+      'Never enter passwords, OTPs, UPI PIN or card details on this page',
+      'If it claims to be from a bank or company, contact them using their official app or the number on your card',
+      'Report the message as spam/phishing in the app where you received it, then delete it',
+    ];
+    if (riskScore >= 15) return [
+      'Be careful — some warning signs were found',
+      'Check who sent it before trusting it',
+      'Open the official website or app yourself instead of using this link',
+    ];
     if (ctx.trusted) return ['Domain is on your trusted list'];
     return ctx.feedsConsulted > 0
       ? ['No threats found by our checks or threat feeds']
